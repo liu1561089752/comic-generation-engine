@@ -1,0 +1,19 @@
+system:你是一位专业的小说角色提取专家
+user:我是京圈太子爷身边唯一的金丝雀
+res:直接返回角色.json的所有值
+
+system:你的任务是将我提供的剧本文本，严格按照文本的物理结构（自然段落或序号），拆分并整理为独立的"单镜头文案"
+user:我是京圈太子爷身边唯一的金丝雀
+res:脚本的.json的全部内容，直接返回
+
+system:你的任务是根据我提供的单个章节的脚本数据，为每个镜头生成专业、详细的分镜描述
+user:会包含chapterTitle\":，如{\"chapterTitle\": \"豪宅客厅\",根据这个值进行回复
+res:读取分镜.json，返回的数据是["chapterTitle"]的值，比如user里chapterTitle值是豪宅客厅，就返回["豪宅客厅"]的值
+
+system:Page Layout Planner
+user:会包含chapterTitle值
+res:读取排版.json，返回的数据是["chapterTitle"]的值，比如user里chapterTitle值是豪宅客厅，就返回["豪宅客厅"]的值
+
+system:根据提供的分页分镜如
+user:格式如下{"prevPage":{"pageId":"P1","layoutType":"上中下三格均分","pagePurpose":"展示女主高傲出场与男主受压状态，引入超自然弹幕现象","visualFocus":"女主的傲慢与男主的屈辱对比，最后聚焦于突然出现的幽蓝弹幕","shots":[{"shotId":"01","content":"我是性格恶劣的娇气大小姐。","storyboardDetails":"特写（CU），暖色调灯光。江羡月化着精致张扬的妆容，下巴微抬，眼神轻蔑，嘴角勾起一抹傲慢的冷笑。镜头缓慢推近。"},{"shotId":"02","content":"又一次仗着身份将养兄折磨得瞳孔失焦、青筋暴起后。","storyboardDetails":"中景（MS）转特写（CU），高反差冷光。宋庭青半跪在床边，白衬衫凌乱。特写他的脸部，额头布满细汗，脖颈处青筋凸起，双眼失去焦距，胸口剧烈起伏。"},{"shotId":"03","content":"半空中忽然飘过弹幕：","storyboardDetails":"全景（WS），主观视角。卧室半空中突然亮起幽蓝色的全息光影，一行行半透明的发光字体凭空浮现，冷光照亮了江羡月惊愕的脸。"}]},"currentPage":{"pageId":"P2","layoutType":"四格拆分","pagePurpose":"快速展示弹幕内容，交代背景信息与女主即将面临的危机","visualFocus":"弹幕文字的视觉压迫感，以及男主隐忍状态的背景衬托","shots":[{"shotId":"04","content":"【马上就能见到女主了，男主一定要坚持住啊！】","storyboardDetails":"特写（CU）。幽蓝色的弹幕文字在画面中央快速滚动，背景是虚化的宋庭青隐忍、紧绷的侧脸。"},{"shotId":"05","content":"【每次女配只要一靠近男主，男主都恶心得全身发抖。】","storyboardDetails":"特写（CU）。镜头下移，聚焦在宋庭青紧握成拳、指节泛白且微微颤抖的双手上，蓝色弹幕文字叠加在画面前景。"},{"shotId":"06","content":"【别担心，女配嚣张不了多久了，男主马上要把她家搞破产咯。】","storyboardDetails":"特写（CU）。弹幕文字闪烁着刺眼的红光，占据整个屏幕，字号瞬间放大，带来强烈的视觉压迫感。"},{"shotId":"07","content":"【没了大小姐的身份，四体不勤、五谷不分的女配最后活活饿死了！】","storyboardDetails":"特写（CU）。江羡月的瞳孔骤然放大，眼球中清晰倒映着"活活饿死"四个发光的红色大字，面部肌肉微微抽搐。"}]}}
+res:读取提示词.json，根据currentPage的第一个"shotId"值进行返回，比如值是01，就返回["01"]的值，如果是04就返回["04"]的值
