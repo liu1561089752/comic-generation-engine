@@ -1,12 +1,82 @@
-from datetime import datetime
+import logging
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List
 from uuid import UUID
 
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import async_session_factory
+from app.infra.task_registry import cancel_background_task
 from app.repositories.base import BaseRepository
 from app.models.task import Task
+
+logger = logging.getLogger(__name__)
+
+# 任务超时阈值
+STUCK_TASK_TIMEOUT_MINUTES = 30
+
+
+async def cleanup_stuck_tasks() -> int:
+    """自动清理卡住的任务。
+
+    将超过 STUCK_TASK_TIMEOUT_MINUTES 分钟仍处于 queued/running 状态的任务
+    标记为 failed。
+
+    根据项目记忆，stuck 任务常见于 task_type='generate_page_images'，
+    但也清理其他所有卡住的任务类型。
+
+    Returns:
+        清理的任务数量
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=STUCK_TASK_TIMEOUT_MINUTES)
+    cleaned = 0
+
+    async with async_session_factory() as sess:
+        # 查找所有卡住的任务
+        result = await sess.execute(
+            select(Task).where(
+                Task.status.in_(["queued", "running"]),
+                Task.updated_at < cutoff,
+            )
+        )
+        stuck_tasks = list(result.scalars().all())
+
+        if not stuck_tasks:
+            logger.info("没有卡住的任务需要清理")
+            return 0
+
+        task_ids = [t.id for t in stuck_tasks]
+        logger.warning(
+            f"发现 {len(stuck_tasks)} 个卡住的任务 (超过 {STUCK_TASK_TIMEOUT_MINUTES} 分钟)："
+            f"{[(str(t.id)[:8], t.task_type, t.status) for t in stuck_tasks]}"
+        )
+
+        # 先取消对应的后台协程
+        for tid in task_ids:
+            try:
+                await cancel_background_task(tid)
+            except Exception as e:
+                logger.warning(f"取消后台任务 {tid} 失败: {e}")
+
+        # 批量更新为 failed
+        await sess.execute(
+            sa_update(Task)
+            .where(Task.id.in_(task_ids))
+            .values(
+                status="failed",
+                error_message=(
+                    f"自动清理：任务卡住超过 {STUCK_TASK_TIMEOUT_MINUTES} 分钟，"
+                    "请重试或联系管理员"
+                ),
+                completed_at=datetime.now(timezone.utc),
+            )
+        )
+        await sess.commit()
+        cleaned = len(stuck_tasks)
+        logger.info(f"已自动清理 {cleaned} 个卡住的任务")
+
+    return cleaned
 
 
 class TaskRepository(BaseRepository[Task]):

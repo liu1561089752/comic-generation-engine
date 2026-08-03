@@ -23,6 +23,7 @@ from app.infra.task_progress import TaskProgressTracker
 from app.models.novel import ScriptChapter, ScriptShot
 from app.models.storyboard import StoryboardChapter, StoryboardShot
 from app.models.layout import LayoutChapter, LayoutPage, LayoutShot, ImagePrompt, GeneratedImage, ReferenceMatch
+from app.repositories import layout_repo
 from app.repositories.novel_repo import NovelRepository
 from app.infra.prompt_loader import get_prompt
 
@@ -41,6 +42,9 @@ class LayoutService:
 
         T2: 移除业务层重试循环（adapter 层已有 3 次指数退避重试）。
         校验失败直接抛异常，由 gather(return_exceptions=True) 捕获。
+
+        出错时把 LLM 原始返回内容写入 backend/logs/llm_debug/ 下的 txt 文件，
+        便于排查 shot 不匹配 / JSON 解析失败 / pageId 格式异常等问题。
         """
         llm = LLMAdapter(
             api_key=settings.LLM_API_KEY,
@@ -53,25 +57,78 @@ class LayoutService:
             ChatMessage(role="system", content=system_prompt),
             ChatMessage(role="user", content=json.dumps(chapter_data, ensure_ascii=False)),
         ]
-        result = await llm.chat(messages=messages)
-        parsed = parse_llm_json(result.content)
-        if isinstance(parsed, dict) and "pages" in parsed:
-            pages = parsed["pages"]
-        elif isinstance(parsed, list):
-            pages = parsed
-        else:
-            pages = []
-        original_shots = {(s["shotId"], s["content"]) for s in chapter_data.get("shots", [])}
-        returned_shots = set()
-        for page in pages:
-            for s in page.get("shots", []):
-                if not s["shotId"].startswith("INSERT"):
-                    returned_shots.add((s["shotId"], s["content"]))
-        if original_shots and original_shots != returned_shots:
-            missing = original_shots - returned_shots
-            raise ValueError(f"排版生成 shot 不匹配: 缺失={missing}")
-        pages.sort(key=lambda x: int(x["pageId"].replace("P", "")))
-        return pages
+        result = None
+        try:
+            result = await llm.chat(messages=messages)
+            parsed = parse_llm_json(result.content)
+            if isinstance(parsed, dict) and "pages" in parsed:
+                pages = parsed["pages"]
+            elif isinstance(parsed, list):
+                pages = parsed
+            else:
+                pages = []
+            original_shots = {(s["shotId"], s["content"]) for s in chapter_data.get("shots", [])}
+            returned_shots = set()
+            for page in pages:
+                for s in page.get("shots", []):
+                    # 提示词约定 INSERT 格的 shotId 形如 "05_INSERT"（原 shotId + _INSERT 后缀），
+                    # 不能用 startswith("INSERT") —— 那只会匹配 "INSERT_05" 这种前缀格式，
+                    # 反而把真正的 "05_INSERT" 当成普通镜头加入 returned_shots，导致不匹配报错。
+                    if not s["shotId"].endswith("_INSERT"):
+                        returned_shots.add((s["shotId"], s["content"]))
+            if original_shots and original_shots != returned_shots:
+                missing = original_shots - returned_shots
+                extra = returned_shots - original_shots
+                raise ValueError(
+                    f"排版生成 shot 不匹配: 缺失={missing}, 多余={extra}"
+                )
+            pages.sort(key=lambda x: int(x["pageId"].replace("P", "")))
+            return pages
+        except Exception as e:
+            self._dump_layout_llm_failure(chapter_data, result, e)
+            raise
+
+    def _dump_layout_llm_failure(
+        self, chapter_data: dict, result, error: Exception
+    ) -> None:
+        """排版 LLM 调用失败时，把原始返回内容写入 txt 文件，便于排查.
+
+        文件路径：backend/logs/llm_debug/layout_{时间}_{章节标题}.txt
+        """
+        try:
+            import re
+            from datetime import datetime
+            from pathlib import Path
+
+            log_dir = Path(__file__).resolve().parents[3] / "logs" / "llm_debug"
+            log_dir.mkdir(parents=True, exist_ok=True)
+
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            title = chapter_data.get("chapterTitle", "unknown") or "unknown"
+            safe_title = re.sub(r'[\\/:*?"<>|]', "_", title)[:50]
+            filepath = log_dir / f"layout_{ts}_{safe_title}.txt"
+
+            lines = [
+                "=== 排版生成失败 ===",
+                f"时间: {datetime.now().isoformat()}",
+                f"章节标题: {title}",
+                f"错误类型: {type(error).__name__}",
+                f"错误信息: {error}",
+                "",
+                "=== 输入 chapter_data ===",
+                json.dumps(chapter_data, ensure_ascii=False, indent=2),
+                "",
+                "=== LLM 原始返回内容 ===",
+            ]
+            if result is not None and hasattr(result, "content"):
+                lines.append(result.content)
+            else:
+                lines.append("(LLM 调用本身失败，没有返回内容)")
+
+            filepath.write_text("\n".join(lines), encoding="utf-8")
+            logger.info(f"排版 LLM 失败原始数据已写入: {filepath}")
+        except Exception as dump_err:
+            logger.warning(f"写入 LLM 失败调试文件时出错: {dump_err}")
 
     async def generate_layout(self, novel_id: UUID, tracker: Optional[TaskProgressTracker] = None) -> dict:
         """调用LLM为缺少排版数据的章节生成排版.
@@ -105,8 +162,8 @@ class LayoutService:
                 script_shots_r = await read_session.execute(
                     select(ScriptShot).where(ScriptShot.chapter_id.in_(script_chapter_ids))
                 )
+                sc_map = {sc.id: sc for sc in script_chs}
                 for shot in script_shots_r.scalars().all():
-                    sc_map = {sc.id: sc for sc in script_chs}
                     sc = sc_map.get(shot.chapter_id)
                     if sc:
                         content_map[(sc.sort_order, shot.shot_id)] = shot.content
@@ -161,6 +218,8 @@ class LayoutService:
                     f"共 {len(chapters_input)} 个章节，其中 {len(missing_chapters)} 个缺少排版，开始生成..."
                 )
 
+        skipped_count = len(chapters_input) - len(missing_chapters)
+
         try:
             # Step 3: AI call — parallel, only for missing chapters
             tasks = []
@@ -172,27 +231,6 @@ class LayoutService:
             # T2: return_exceptions 防止单章失败导致全批中断
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # 页面编号：在已有最大页码基础上续编
-            page_counter = 1
-            if existing_layout:
-                # 读取已有布局的最大页码
-                async with async_session_factory() as counter_session:
-                    existing_chapter_ids = [ch.id for ch in existing_layout]
-                    pages_r = await counter_session.execute(
-                        select(LayoutPage.page_label).where(
-                            LayoutPage.chapter_id.in_(existing_chapter_ids)
-                        )
-                    )
-                    max_page_num = 0
-                    for (label,) in pages_r:
-                        if label.startswith("P"):
-                            try:
-                                num = int(label[1:])
-                                max_page_num = max(max_page_num, num)
-                            except ValueError:
-                                pass
-                    page_counter = max_page_num + 1
-
             failed_layout_chapters = []
             valid_results = []
             for idx, pages in enumerate(results):
@@ -201,19 +239,18 @@ class LayoutService:
                     failed_layout_chapters.append(missing_chapters[idx]["chapterTitle"])
                     continue
                 valid_results.append((idx, pages))
-                for page in pages:
-                    page["pageId"] = f"P{page_counter}"
-                    page_counter += 1
             if failed_layout_chapters:
                 logger.warning(f"以下章节排版生成失败已跳过: {failed_layout_chapters}")
 
             if not valid_results:
                 # 所有要生成的章节都失败了，返回已有数据
-                async with async_session_factory() as result_session:
-                    result_data = await self._build_layout_response_session(result_session, novel_id)
-                if tracker:
-                    await tracker.complete(result_data)
-                return result_data
+                failed_titles = [c["chapterTitle"] for c in missing_chapters]
+                err_msg = (
+                    f"排版生成失败：以下 {len(failed_titles)} 个章节全部 AI 调用失败"
+                    f"（{', '.join(failed_titles)}），请检查 LLM 配置或稍后重试"
+                )
+                logger.error(err_msg)
+                raise ValueError(err_msg)
 
             # Step 4: Short write — save new chapters only, keep existing ones
             async with async_session_factory() as write_session:
@@ -233,6 +270,9 @@ class LayoutService:
                         sync_status="fresh",
                     )
                     write_session.add(chapter)
+                    # 新 page 先用临时 page_label（后续全局重新编号）
+                    for pi, page in enumerate(pages):
+                        page["_temp_label"] = f"TMP{pi}"
                     new_chapters.append((chapter, ch_data, pages, save_idx))
 
                     if tracker:
@@ -243,12 +283,12 @@ class LayoutService:
                 await write_session.flush()
 
                 all_pages = []
-                page_shots = []  # (page, shots_list) 暂存
+                page_shots = []  # (page, pages_list_index) 暂存
                 for chapter, ch_data, pages, save_idx in new_chapters:
                     for page_idx, page in enumerate(pages):
                         all_pages.append(LayoutPage(
                             chapter_id=chapter.id,
-                            page_label=page.get("pageId", f"P{page_idx + 1}"),
+                            page_label=page.get("_temp_label", f"TMP{page_idx}"),
                             layout_type=page.get("layoutType", ""),
                             page_purpose=page.get("pagePurpose", ""),
                             visual_focus=page.get("visualFocus", ""),
@@ -261,7 +301,6 @@ class LayoutService:
                 await write_session.flush()
 
                 # 保存 LayoutShot
-                from app.models.layout import LayoutShot
                 all_layout_shots = []
                 for page_data, p_idx in page_shots:
                     lp = all_pages[p_idx]
@@ -275,13 +314,33 @@ class LayoutService:
                     write_session.add_all(all_layout_shots)
                 await write_session.commit()
 
+            # Step 5: 全局重新编号所有页面（按 chapter.sort_order + page.sort_order）
+            async with async_session_factory() as renumber_session:
+                all_pages_r = await renumber_session.execute(
+                    select(LayoutPage)
+                    .join(LayoutChapter, LayoutPage.chapter_id == LayoutChapter.id)
+                    .where(LayoutChapter.novel_id == novel_id)
+                    .order_by(LayoutChapter.sort_order, LayoutPage.sort_order)
+                )
+                page_counter = 1
+                for lp in all_pages_r.scalars().all():
+                    lp.page_label = f"P{page_counter}"
+                    page_counter += 1
+                await renumber_session.commit()
+                logger.info(f"排版页面已全局重新编号：共 {page_counter - 1} 页")
+
             if tracker:
                 await tracker.update_progress(90, "保存排版数据完成")
 
             async with async_session_factory() as result_session:
                 result_data = await self._build_layout_response_session(result_session, novel_id)
             if tracker:
-                await tracker.complete(result_data)
+                complete_msg = "排版生成完成"
+                if failed_layout_chapters:
+                    complete_msg += f"，{len(failed_layout_chapters)} 章失败: {', '.join(failed_layout_chapters)}"
+                if skipped_count > 0:
+                    complete_msg += f"（跳过已存在 {skipped_count} 章）"
+                await tracker.complete(result_data, complete_msg)
             return result_data
 
         except Exception as e:
@@ -483,106 +542,10 @@ class LayoutService:
         return await self._get_layout_chapters_session(session, novel_id)
 
     async def _get_layout_chapters_session(self, session: AsyncSession, novel_id: UUID):
-        result = await session.execute(
-            select(LayoutChapter).where(LayoutChapter.novel_id == novel_id).order_by(LayoutChapter.sort_order)
-        )
-        return list(result.scalars().all())
+        return await layout_repo.get_layout_chapters_session(session, novel_id)
 
     async def _build_layout_response(self, session: AsyncSession, novel_id: UUID) -> dict:
         return await self._build_layout_response_session(session, novel_id)
 
     async def _build_layout_response_session(self, session: AsyncSession, novel_id: UUID) -> dict:
-        result = await session.execute(
-            select(LayoutChapter)
-            .options(
-                selectinload(LayoutChapter.pages)
-                .selectinload(LayoutPage.shots),
-                selectinload(LayoutChapter.pages)
-                .selectinload(LayoutPage.image_prompt),
-                selectinload(LayoutChapter.pages)
-                .selectinload(LayoutPage.reference_match),
-                selectinload(LayoutChapter.pages)
-                .selectinload(LayoutPage.generated_images),
-            )
-            .where(LayoutChapter.novel_id == novel_id)
-            .order_by(LayoutChapter.sort_order)
-        )
-        chapters = result.scalars().all()
-
-        # 批量查询 LayoutShot 构建 shot 映射
-        from app.models.layout import LayoutShot
-        all_page_ids = [p.id for ch in chapters for p in ch.pages]
-        shot_map = {}  # page_id → shot list
-        if all_page_ids:
-            shots_r = await session.execute(
-                select(LayoutShot).where(LayoutShot.page_id.in_(all_page_ids))
-                .order_by(LayoutShot.sort_order)
-            )
-            for ls in shots_r.scalars().all():
-                shot_map.setdefault(str(ls.page_id), []).append({
-                    "shotId": ls.shot_id,
-                    "sortOrder": ls.sort_order,
-                })
-
-        # 构建 ScriptShot.content 查询映射: (chapter_sort_order, shot_id) → content
-        content_map = {}
-        script_chs = await self._get_script_chapters_session(session, novel_id)
-        script_chapter_ids = [sc.id for sc in script_chs]
-        sc_sort_map = {sc.id: sc.sort_order for sc in script_chs}
-        if script_chapter_ids:
-            script_shots_r = await session.execute(
-                select(ScriptShot).where(ScriptShot.chapter_id.in_(script_chapter_ids))
-            )
-            for ss in script_shots_r.scalars().all():
-                sort_order = sc_sort_map.get(ss.chapter_id)
-                if sort_order is not None:
-                    content_map[(sort_order, ss.shot_id)] = ss.content
-
-        # 构建 StoryboardShot.storyboard_details 查询映射:
-        #   (chapter_sort_order, shot_id) → storyboard_details
-        sb_detail_map = {}
-        storyboard_chs = await self._get_storyboard_chapters_session(session, novel_id)
-        sb_chapter_ids = [sc.id for sc in storyboard_chs]
-        sb_sort_map = {sc.id: sc.sort_order for sc in storyboard_chs}
-        if sb_chapter_ids:
-            sb_shots_r = await session.execute(
-                select(StoryboardShot).where(StoryboardShot.chapter_id.in_(sb_chapter_ids))
-            )
-            for sbs in sb_shots_r.scalars().all():
-                sort_order = sb_sort_map.get(sbs.chapter_id)
-                if sort_order is not None:
-                    sb_detail_map[(sort_order, sbs.shot_id)] = sbs.storyboard_details
-
-        # 构建 chapter_sort_order 查找: page_id → chapter.sort_order
-        ch_sort_map = {ch.id: ch.sort_order for ch in chapters}
-
-        return {"chapters": [
-            {
-                "id": str(ch.id),
-                "title": ch.title,
-                "sort_order": ch.sort_order,
-                "pages": [
-                    {
-                        "id": str(p.id),
-                        "page_id": p.page_label,
-                        "layout_type": p.layout_type,
-                        "page_purpose": p.page_purpose,
-                        "visual_focus": p.visual_focus,
-                        "image_prompt": p.image_prompt.full_prompt if p.image_prompt else "",
-                        "image_url": p.generated_images[0].image_url if p.generated_images else "",
-                        "reference_ids": p.reference_match.ref_ids if p.reference_match else [],
-                        "shots": [
-                            {
-                                **s,
-                                "content": content_map.get((ch_sort_map.get(ch.id), s["shotId"]), ""),
-                                "storyboardDetails": sb_detail_map.get((ch_sort_map.get(ch.id), s["shotId"]), ""),
-                            }
-                            for s in shot_map.get(str(p.id), [])
-                        ],
-                        "sort_order": p.sort_order,
-                    }
-                    for p in ch.pages
-                ],
-            }
-            for ch in chapters
-        ]}
+        return await layout_repo.build_layout_response_session(session, novel_id)

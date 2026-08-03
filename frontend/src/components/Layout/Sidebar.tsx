@@ -19,6 +19,7 @@ import {
   ApiOutlined,
   QuestionCircleOutlined,
 } from '@ant-design/icons'
+import { preloadByPath } from '../../routeComponents'
 
 const { Sider } = Layout
 
@@ -112,7 +113,15 @@ export default function Sidebar() {
         items={menuItems.map((item) => ({
           key: item.key,
           icon: item.icon,
-          label: item.label,
+          label: (
+            <div
+              onMouseEnter={() => {
+                if (item.path) preloadByPath(item.path)
+              }}
+            >
+              {item.label}
+            </div>
+          ),
         }))}
         onClick={handleMenuClick}
       />

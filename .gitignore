@@ -58,3 +58,8 @@ backend/logs/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ===== 备份与调试产物（含 API Key / 密码哈希等敏感信息，禁止入库） =====
+db_backup/
+debug_llm_response_*.txt
+backend/chapter1_user_prompt.json

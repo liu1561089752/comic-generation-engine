@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 from typing import Optional, Set
 from uuid import UUID
 
@@ -19,6 +20,20 @@ from app.infra.websocket import task_event_manager, TaskEventManager, _task_to_w
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# WebSocket 连接最大存活时间（秒），超过此时间强制断开
+_WS_MAX_LIFETIME = 3600.0
+
+
+async def _enforce_max_lifetime(websocket: WebSocket, started_at: float, max_lifetime: float = _WS_MAX_LIFETIME) -> bool:
+    """检查连接是否超过最大存活时间，超过则关闭并返回 False。"""
+    if time.monotonic() - started_at > max_lifetime:
+        try:
+            await websocket.close(code=4000, reason="连接超过最大存活时间")
+        except Exception:
+            pass
+        return True
+    return False
 
 
 async def _task_belongs_to_user(task, user_id: str, db: AsyncSession) -> bool:
@@ -74,6 +89,7 @@ async def task_status_websocket(
         return
 
     logger.info(f"WebSocket 连接: task_id={task_id}")
+    _started_at = time.monotonic()
 
     await task_event_manager.subscribe(task_id, websocket)
 
@@ -86,12 +102,15 @@ async def task_status_websocket(
 
         # 保持连接，持续接收消息（用于心跳）
         while True:
+            if await _enforce_max_lifetime(websocket, _started_at):
+                break
             try:
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=30)
                 # 处理客户端 ping
                 msg = json.loads(data)
                 if msg.get("type") == "ping":
                     await websocket.send_json({"type": "pong"})
+                _started_at = time.monotonic()  # 有消息时重置空闲时间
             except asyncio.TimeoutError:
                 # 发送心跳保活
                 try:
@@ -132,9 +151,12 @@ async def task_list_websocket(
     logger.info("WebSocket 连接: /ws/tasks (全局)")
 
     await task_event_manager.subscribe_global(websocket, user_id=user_id)
+    _started_at = time.monotonic()
 
     try:
         while True:
+            if await _enforce_max_lifetime(websocket, _started_at):
+                break
             try:
                 # 每10秒推送队列数据（短 session，不持有 DB 连接）
                 # 实时更新由 task_event_manager 的事件广播处理，轮询仅作为补偿
@@ -180,6 +202,7 @@ async def task_list_websocket(
                     msg = json.loads(data)
                     if msg.get("type") == "ping":
                         await websocket.send_json({"type": "pong"})
+                    _started_at = time.monotonic()  # 有消息时重置空闲时间
                 except asyncio.TimeoutError:
                     # 正常超时，继续下一轮推送
                     continue

@@ -151,16 +151,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setPanels: (panels) => {
     set({ panels })
   },
-  setSelectedPanelId: (id) => set({ selectedPanelId: id, selectedBubbleId: id ? null : null }),
+  setSelectedPanelId: (id) => set((state) => ({
+    selectedPanelId: id,
+    selectedBubbleId: id !== state.selectedPanelId ? null : state.selectedBubbleId,
+  })),
   setSelectedBubbleId: (id) => set({ selectedBubbleId: id, selectedPanelId: id ? null : null }),
-  setStageScale: (scale) => {
-    if (typeof scale === 'function') {
-      const current = useEditorStore.getState().stageScale
-      set({ stageScale: scale(current) })
-    } else {
-      set({ stageScale: scale })
-    }
-  },
+  setStageScale: (scale) => set((state) => ({
+    stageScale: typeof scale === 'function' ? scale(state.stageScale) : scale,
+  })),
   setTool: (tool) => set({ tool }),
   setLoading: (loading) => set({ loading }),
   setExportHistory: (history) => set({ exportHistory: history }),

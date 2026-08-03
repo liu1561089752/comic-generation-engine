@@ -108,7 +108,14 @@ async def main():
         print(f"\n{'='*60}")
         print("发送给 AI 的 payload:")
         print(f"{'='*60}")
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
+        print(payload_text)
+
+        # 保存到文件，便于直接测试
+        out_file = "chapter1_user_prompt.json"
+        with open(out_file, "w", encoding="utf-8") as f:
+            f.write(payload_text)
+        print(f"\n已保存到: {out_file}")
 
     finally:
         await conn.close()

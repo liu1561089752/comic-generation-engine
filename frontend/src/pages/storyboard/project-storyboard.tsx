@@ -101,6 +101,22 @@ function StoryboardDetail({
 
   const selectedChapter = storyboardData.find((ch) => ch.id === selectedChapterId) || null
 
+  // 计算 shot 的全局连续序号（仅用于展示）。
+  // 后端 shot_id 按章独立编号（"01"、"02"...），跨章会重复，
+  // 但分镜/排版的关联键是 (章节序号, shot_id)，因此只在 UI 层做全局映射。
+  const shotGlobalIndexMap = new Map<string, number>()
+  let _globalCounter = 1
+  storyboardData.forEach((ch) => {
+    ch.shots.forEach((s) => {
+      shotGlobalIndexMap.set(s.id, _globalCounter++)
+    })
+  })
+  const formatGlobalShotId = (shot: { id: string } | null | undefined): string => {
+    if (!shot) return '--'
+    const n = shotGlobalIndexMap.get(shot.id)
+    return n == null ? '--' : String(n).padStart(2, '0')
+  }
+
   const handleGenerateStoryboard = async () => {
     if (!projectId || !novelId) return
     try {
@@ -302,7 +318,7 @@ function StoryboardDetail({
                         padding: '2px 6px',
                         borderRadius: 4,
                       }}>
-                        {shot.shot_id}
+                        {formatGlobalShotId(shot)}
                       </Text>
                     </div>
                     <div style={{ flex: 1, marginLeft: 12 }}>

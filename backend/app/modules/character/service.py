@@ -12,7 +12,6 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Tuple
 from uuid import UUID
 
-import requests
 from sqlalchemy import func, select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +20,7 @@ from app.core.database import async_session_factory
 from app.core.llm_utils import parse_llm_json
 from app.infra.adapters.base_llm import ChatMessage
 from app.infra.adapters.grsai_api_adapter import GRSaiAPIAdapter
+from app.infra.adapters.http_client import HttpClientManager
 from app.infra.adapters.llm_adapter import LLMAdapter
 from app.infra.file_utils import (
     file_exists,
@@ -235,6 +235,9 @@ class CharacterService:
         Step 1: AI call（不持有 DB session）
         Step 2: Short write — 读取旧记录 -> 删除 -> 创建新记录 -> commit
         """
+        if not novel_text:
+            return []
+
         logger.info(f"===== 开始提取角色, novel_text长度={len(novel_text)} =====")
 
         # Step 1: AI call (no DB session held)
@@ -256,6 +259,15 @@ class CharacterService:
             data = parse_llm_json(raw_content)
         except ValueError as e:
             logger.info(f"解析AI返回结果失败: {str(raw_content)}")
+            # 临时：写入原始响应到txt便于调试
+            try:
+                from datetime import datetime
+                tmp_path = rf"E:\VScode\Python\Comic Generation Engine\debug_llm_response_{datetime.now():%Y%m%d_%H%M%S}.txt"
+                import pathlib
+                pathlib.Path(tmp_path).write_text(raw_content, encoding="utf-8")
+                logger.info(f"已将原始响应写入: {tmp_path}")
+            except Exception as write_err:
+                logger.warning(f"写入调试文件失败: {write_err}")
             raise ValueError(f"解析AI返回结果失败: {str(e)}")
             
 
@@ -392,7 +404,7 @@ class CharacterService:
                 raise ValueError("角色描述为空")
 
             # 检查是否为角色状态（名称含括号）
-            state_match = re.match(r"^(.+?)[（(]", character.name)
+            state_match = re.match(r"^(.+?)[（(]", character.name) if character.name else None
             character_name = character.name
 
             # 查询该角色的形象图 URL
@@ -482,8 +494,8 @@ class CharacterService:
                 filename = f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}.png"
                 filepath = os.path.join(char_dir, filename)
 
-                resp = await asyncio.to_thread(
-                    requests.get,
+                client = HttpClientManager.get_image_client()
+                resp = await client.get(
                     image_url,
                     headers={
                         "User-Agent": (
@@ -526,6 +538,168 @@ class CharacterService:
         return {
             "character_id": str(character_id),
             "character_name": character_name,
+            "image_url": local_path or image_url,
+        }
+
+    async def generate_state_image(
+        self, character_id: UUID, state_id: UUID, project_id: UUID
+    ) -> dict:
+        """生成角色状态的专属形象 — 短事务模式。
+
+        使用父角色的主图作为参考图，生成该状态的设定形象。
+        """
+        parent_img_url: Optional[str] = None
+        parent_name: Optional[str] = None
+        state_name: str = ""
+
+        # Step 1: Short read — 获取状态数据及父角色形象
+        async with async_session_factory() as read_session:
+            from app.models.character import CharacterReferenceImage as RefImage
+
+            # 查询状态记录
+            state_result = await read_session.execute(
+                select(CharacterState).where(CharacterState.id == state_id)
+            )
+            state = state_result.scalar_one_or_none()
+            if not state:
+                raise ValueError("角色状态不存在")
+
+            state_name = state.name
+            description = state.description or ""
+
+            if not description:
+                raise ValueError(f"状态「{state_name}」的描述为空，无法生成形象")
+
+            # 查询父角色
+            character = await read_session.execute(
+                select(Character).where(Character.id == character_id)
+            )
+            character = character.scalar_one_or_none()
+            if not character:
+                raise ValueError("角色不存在")
+
+            parent_name = character.name
+
+            # 查询父角色的默认形象作为参考图
+            parent_ref_result = await read_session.execute(
+                select(RefImage).where(
+                    RefImage.character_id == character_id,
+                    RefImage.state_id.is_(None),
+                ).limit(1)
+            )
+            parent_ref_img = parent_ref_result.scalar_one_or_none()
+            if parent_ref_img:
+                parent_img_url = parent_ref_img.image_url
+            else:
+                raise ValueError(
+                    f"请先生成角色「{parent_name}」的默认形象，再生成状态形象"
+                )
+
+            # 查询旧的状态形象图（用于后续删除）
+            old_ref_result = await read_session.execute(
+                select(RefImage).where(
+                    RefImage.character_id == character_id,
+                    RefImage.state_id == state_id,
+                ).limit(1)
+            )
+            old_ref_img = old_ref_result.scalar_one_or_none()
+            old_image_url = old_ref_img.image_url if old_ref_img else ""
+
+        # Step 2: File I/O — 读取父角色参考图
+        parent_ref_image_b64: Optional[str] = None
+        if parent_img_url and parent_img_url.startswith("/storage/"):
+            storage_base = settings.STORAGE_LOCAL_PATH
+            rel = parent_img_url[len("/storage/"):]
+            file_path = os.path.join(storage_base, rel.replace("/", os.sep))
+            img_bytes = await read_bytes(file_path)
+            if img_bytes:
+                parent_ref_image_b64 = base64.b64encode(img_bytes).decode("utf-8")
+                logger.info(f"已加载父角色「{parent_name}」形象作为状态「{state_name}」的参考图")
+
+        # Step 3: AI call — 生成图片
+        params = {"aspectRatio": "16:9"}
+        if parent_ref_image_b64:
+            params["images"] = [f"data:image/png;base64,{parent_ref_image_b64}"]
+
+        image_gen = GRSaiAPIAdapter()
+        gen_result = await image_gen.generate(description, params=params)
+
+        image_url = gen_result.get("image_url", "")
+        local_path = ""
+
+        if image_url:
+            # Step 4: File I/O — 下载并保存图片
+            storage_base = settings.STORAGE_LOCAL_PATH
+
+            # 删除旧状态图
+            if old_image_url.startswith("/storage/"):
+                old_rel = old_image_url[len("/storage/"):]
+                old_file = os.path.join(storage_base, old_rel.replace("/", os.sep))
+                if await file_exists(old_file):
+                    try:
+                        await remove_file(old_file)
+                        logger.info(f"旧状态形象已删除: {old_rel}")
+                    except Exception as e:
+                        logger.warning(f"删除旧状态形象失败: {e}")
+
+            # 下载并保存新图片
+            try:
+                # 保存到 characters/{character_id}/states/ 目录
+                state_dir = os.path.join(
+                    storage_base, str(project_id), "characters", str(character_id), "states"
+                )
+                await makedirs(state_dir, exist_ok=True)
+
+                filename = f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{state_id}.png"
+                filepath = os.path.join(state_dir, filename)
+
+                client = HttpClientManager.get_image_client()
+                resp = await client.get(
+                    image_url,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/120.0.0.0 Safari/537.36"
+                        ),
+                        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                        "Accept-Language": "zh-CN,zh;q=0.9",
+                        "Referer": "https://grsai.dakka.com.cn/",
+                    },
+                    timeout=60.0,
+                )
+                resp.raise_for_status()
+                await write_bytes_atomic(filepath, resp.content)
+
+                local_path = f"/storage/{project_id}/characters/{character_id}/states/{filename}"
+                logger.info(f"状态形象已保存到本地: {local_path}")
+            except Exception as e:
+                logger.warning(f"下载状态形象到本地失败，使用原始URL: {e}")
+
+            # Step 5: Short write — 写入 CharacterReferenceImage（关联 state_id）
+            async with async_session_factory() as write_session:
+                from app.models.character import CharacterReferenceImage as RefImg
+
+                # 删除该状态旧的形象图记录
+                await write_session.execute(
+                    RefImg.__table__.delete().where(
+                        RefImg.character_id == character_id,
+                        RefImg.state_id == state_id,
+                    )
+                )
+                # 创建新记录
+                new_ref = RefImg(
+                    character_id=character_id,
+                    state_id=state_id,
+                    image_url=local_path or image_url,
+                )
+                write_session.add(new_ref)
+                await write_session.commit()
+
+        return {
+            "character_id": str(character_id),
+            "state_id": str(state_id),
+            "state_name": state_name,
             "image_url": local_path or image_url,
         }
 

@@ -20,6 +20,7 @@ from app.schemas.character_schema import (
     CharacterReferenceImageCreate,
     CharacterReferenceImageResponse,
 )
+from app.models.character import CharacterState
 
 
 class ExtractCharactersRequest(BaseModel):
@@ -45,13 +46,53 @@ async def list_characters(
     db: AsyncSession = Depends(get_db),
 ):
     """获取人物IP列表"""
-    from app.models.character import CharacterReferenceImage
+    from sqlalchemy import select
+    from app.models.character import CharacterReferenceImage, CharacterState
     service = CharacterService(db)
     characters, total = await service.list_characters(project_id, skip=skip, limit=limit, search=search, role_type=role_type)
-    # 查询每个角色的默认形象图
+
+    # 批量查询各角色的状态和默认形象图
+    char_ids = [c.id for c in characters]
+    states_result = await db.execute(
+        select(CharacterState).where(CharacterState.character_id.in_(char_ids)).order_by(CharacterState.sort_order)
+    )
+    all_states = states_result.scalars().all()
+    state_ids = [s.id for s in all_states]
+
+    # 批量查询状态参考图
+    state_ref_images = {}
+    if state_ids:
+        ref_r = await db.execute(
+            select(CharacterReferenceImage).where(
+                CharacterReferenceImage.character_id.in_(char_ids),
+                CharacterReferenceImage.state_id.in_(state_ids),
+            )
+        )
+        for ref in ref_r.scalars().all():
+            if ref.state_id:
+                state_ref_images[str(ref.state_id)] = ref.image_url
+
+    states_map: dict = {}
+    for s in all_states:
+        cid = str(s.character_id)
+        sid_str = str(s.id)
+        states_map.setdefault(cid, []).append({
+            "id": sid_str,
+            "character_id": cid,
+            "name": s.name,
+            "aliases": s.aliases,
+            "description": s.description,
+            "sort_order": s.sort_order,
+            "image_url": state_ref_images.get(sid_str),
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+            "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+        })
+
     items = []
     for c in characters:
         d = CharacterResponse.model_validate(c).model_dump()
+        cid_str = str(c.id)
+        d["states"] = states_map.get(cid_str, [])
         ref_result = await db.execute(
             select(CharacterReferenceImage).where(
                 CharacterReferenceImage.character_id == c.id,
@@ -94,16 +135,51 @@ async def get_character(
     db: AsyncSession = Depends(get_db),
 ):
     """获取人物详情"""
+    from sqlalchemy import select
     service = CharacterService(db)
     character = await service.get_character(character_id)
     if character is None:
         raise HTTPException(status_code=404, detail="人物不存在")
-    # 获取关联的服装和参考图
+    # 获取关联的服装、参考图和状态
     outfits, _ = await service.list_outfits(character_id)
     ref_images, _ = await service.list_reference_images(character_id)
-    data = CharacterResponse.model_validate(character).model_dump()
+    states_result = await db.execute(
+        select(CharacterState).where(CharacterState.character_id == character_id).order_by(CharacterState.sort_order)
+    )
+    states = states_result.scalars().all()
+
+    # 批量查询状态参考图
+    from app.models.character import CharacterReferenceImage
+    state_ids = [s.id for s in states]
+    state_ref_images = {}
+    if state_ids:
+        ref_r = await db.execute(
+            select(CharacterReferenceImage).where(
+                CharacterReferenceImage.character_id == character_id,
+                CharacterReferenceImage.state_id.in_(state_ids),
+            )
+        )
+        for ref in ref_r.scalars().all():
+            if ref.state_id:
+                state_ref_images[str(ref.state_id)] = ref.image_url
+
+    data = CharacterDetailResponse.model_validate(character).model_dump()
     data["outfits"] = [CharacterOutfitResponse.model_validate(o).model_dump() for o in outfits]
     data["reference_images"] = [CharacterReferenceImageResponse.model_validate(r).model_dump() for r in ref_images]
+    data["states"] = [
+        {
+            "id": str(s.id),
+            "character_id": str(s.character_id),
+            "name": s.name,
+            "aliases": s.aliases,
+            "description": s.description,
+            "sort_order": s.sort_order,
+            "image_url": state_ref_images.get(str(s.id)),
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+            "updated_at": s.updated_at.isoformat() if s.updated_at else None,
+        }
+        for s in states
+    ]
     return ApiResponse(data=data)
 
 
@@ -322,6 +398,25 @@ async def generate_character_image(
     service = CharacterService(db)
     try:
         result = await service.generate_character_image(character_id, project_id)
+        return ApiResponse(data=result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@router.post("/{project_id}/characters/{character_id}/states/{state_id}/generate-image")
+async def generate_state_image(
+    project_id: UUID,
+    character_id: UUID,
+    state_id: UUID,
+    user_id: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """生成角色状态形象（以角色主图为参考）"""
+    service = CharacterService(db)
+    try:
+        result = await service.generate_state_image(character_id, state_id, project_id)
         return ApiResponse(data=result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

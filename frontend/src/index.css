@@ -12,3 +12,14 @@ body {
 #root {
   min-height: 100vh;
 }
+
+/* 生图中心：漫画页大图预览（antd Image 外层容器）。
+   撑满预览区域，图片用 object-fit: contain 完整缩放居中显示；
+   点击图片弹出原图悬浮预览 */
+.gen-page-image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}

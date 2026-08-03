@@ -48,6 +48,7 @@ def spawn_background_task(task_id: UUID, coro) -> asyncio.Task:
 async def cancel_background_task(task_id: UUID) -> bool:
     """取消后台任务，同时中断协程（D39）。
 
+    带有 5 秒超时保护，防止任务在阻塞操作中无法及时响应取消信号。
     Returns:
         True 如果任务被取消，False 如果任务不存在或已完成。
     """
@@ -57,9 +58,11 @@ async def cancel_background_task(task_id: UUID) -> bool:
         return False
     task.cancel()
     try:
-        await task
+        await asyncio.wait_for(task, timeout=5.0)
     except asyncio.CancelledError:
         pass
+    except asyncio.TimeoutError:
+        logger.warning(f"取消后台任务 {key} 超时（任务未在 5 秒内停止）")
     except Exception as e:
         logger.warning(f"取消后台任务 {key} 时捕获异常: {e}")
     logger.info(f"后台任务已取消: task_id={key}")

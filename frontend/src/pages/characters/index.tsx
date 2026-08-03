@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { Card, Button, Input, Modal, message, Space, Table, Image, Input as AntInput } from 'antd'
-import { PlusOutlined, SearchOutlined, TeamOutlined, UserAddOutlined, SaveOutlined, EditOutlined } from '@ant-design/icons'
+import { Card, Button, Input, Modal, message, Space, Table, Image, Tag, Input as AntInput } from 'antd'
+import { PlusOutlined, SearchOutlined, TeamOutlined, UserAddOutlined, SaveOutlined, EditOutlined, PictureOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useCharacterStore } from '../../stores/characterStore'
 import { characterApi } from '../../api/characterApi'
@@ -34,6 +34,8 @@ export default function CharacterList() {
   const [extractLoading, setExtractLoading] = useState(false)
   const [editingDescription, setEditingDescription] = useState<EditingDescription | null>(null)
   const [generatingImage, setGeneratingImage] = useState<string | null>(null)
+  const [generatingStateId, setGeneratingStateId] = useState<string | null>(null)
+  const [stateImageMap, setStateImageMap] = useState<Record<string, Record<string, string>>>({})
 
   useEffect(() => {
     if (projectId) {
@@ -122,6 +124,31 @@ export default function CharacterList() {
     }
   }
 
+  const handleGenerateStateImage = async (characterId: string, stateId: string) => {
+    if (!projectId) return
+    setGeneratingStateId(stateId)
+    try {
+      const res: any = await characterApi.generateStateImage(projectId, characterId, stateId)
+      const stateName = res.data?.state_name || ''
+      const imageUrl = res.data?.image_url || ''
+      setStateImageMap((prev) => ({
+        ...prev,
+        [characterId]: { ...(prev[characterId] || {}), [stateId]: imageUrl },
+      }))
+      message.success(`状态「${stateName}」形象生成成功`)
+    } catch (e: any) {
+      message.error(e.response?.data?.detail || '生成失败')
+    } finally {
+      setGeneratingStateId(null)
+    }
+  }
+
+  const statusColorMap: Record<string, string> = {
+    active: 'green',
+    inactive: 'red',
+    draft: 'orange',
+  }
+
   const columns = [
     {
       title: '角色形象',
@@ -163,6 +190,14 @@ export default function CharacterList() {
             {record.aliases || '暂无别名'}
           </div>
         </div>
+      ),
+    },
+    {
+      title: '状态',
+      key: 'status',
+      width: 100,
+      render: (_: any, record: Character) => (
+        <Tag color={statusColorMap[record.status] || 'default'}>{record.status}</Tag>
       ),
     },
     {
@@ -277,7 +312,56 @@ export default function CharacterList() {
             columns={columns}
             rowKey="id"
             pagination={{ pageSize: 10 }}
-            scroll={{ x: 800 }}
+            scroll={{ x: 900 }}
+            expandable={{
+              rowExpandable: (record: Character) => !!(record.states && record.states.length > 0),
+              expandedRowRender: (record: Character) => {
+                const charStateImages = stateImageMap[record.id] || {}
+                return (
+                  <div style={{ padding: '8px 0' }}>
+                    <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 13, color: '#555' }}>角色状态（年龄/身份阶段）</div>
+                    {record.states?.map((s) => {
+                      const stateImgUrl = s.image_url || charStateImages[s.id]
+                      return (
+                        <Card key={s.id} size="small" style={{ marginBottom: 8, background: '#fafafa' }}>
+                          <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                            <Space>
+                              <Tag color="blue">{s.name}</Tag>
+                              {s.sort_order && <Tag color="default">{s.sort_order}</Tag>}
+                            </Space>
+                            {stateImgUrl && (
+                              <div style={{ marginBottom: 4 }}>
+                                <Image
+                                  src={stateImgUrl}
+                                  alt={s.name}
+                                  width={100}
+                                  height={56}
+                                  style={{ objectFit: 'cover', borderRadius: 4 }}
+                                  preview={{ src: stateImgUrl }}
+                                />
+                              </div>
+                            )}
+                            {s.description && (
+                              <div style={{ fontSize: 12, color: '#666', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                                {s.description}
+                              </div>
+                            )}
+                            <Button
+                              size="small"
+                              icon={<PictureOutlined />}
+                              loading={generatingStateId === s.id}
+                              onClick={() => handleGenerateStateImage(record.id, s.id)}
+                            >
+                              生成形象
+                            </Button>
+                          </Space>
+                        </Card>
+                      )
+                    })}
+                  </div>
+                )
+              },
+            }}
           />
         </Card>
       )}

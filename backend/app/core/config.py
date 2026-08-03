@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     # 导出
     EXPORT_TEMP_DIR: str = "./data/exports"
     EXPORT_MAX_FILE_SIZE_MB: int = 500
-    EXPORT_TARGET_DIR: str = "F:\\"
+    EXPORT_TARGET_DIR: str = "./data/exports"
 
     # 分页限制：True 表示只处理前 100 页（P1-P100）
     PAGE_LIMIT_ENABLED: bool = False

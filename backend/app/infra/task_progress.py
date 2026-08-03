@@ -159,7 +159,6 @@ class TaskProgressTracker:
                     completed_at=self.task.completed_at,
                     logs=self.task.logs or [],
                     output_data=self.task.output_data,
-                    updated_at=datetime.now(timezone.utc),
                 )
                 result = await sess.execute(stmt)
                 await sess.commit()

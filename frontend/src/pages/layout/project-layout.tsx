@@ -84,6 +84,24 @@ function LayoutDetail({ projectId, novelId }: { projectId: string; novelId: stri
 
   const selectedChapter = layoutData.find((ch) => ch.id === selectedChapterId) || null
 
+  // 计算 shot 的全局连续序号（仅用于展示）。
+  // 后端 shot_id 按章独立编号（"01"、"02"...），跨章会重复，
+  // 但分镜/排版的关联键是 (章节序号, shot_id)，因此只在 UI 层做全局映射。
+  // 排版数据里 shot 没有 DB id，用 (chapterId, pageId, shotId) 作为组合键。
+  const shotGlobalIndexMap = new Map<string, number>()
+  let _globalCounter = 1
+  layoutData.forEach((ch) => {
+    ch.pages.forEach((p) => {
+      p.shots.forEach((s) => {
+        shotGlobalIndexMap.set(`${ch.id}|${p.id}|${s.shotId}`, _globalCounter++)
+      })
+    })
+  })
+  const formatGlobalShotId = (chapterId: string, pageId: string, shotId: string): string => {
+    const n = shotGlobalIndexMap.get(`${chapterId}|${pageId}|${shotId}`)
+    return n == null ? '--' : String(n).padStart(2, '0')
+  }
+
   const handleGenerate = async () => {
     try {
       const taskId = await generateLayout(projectId, novelId)
@@ -332,7 +350,7 @@ function LayoutDetail({ projectId, novelId }: { projectId: string; novelId: stri
                             color: '#1677ff', background: '#e6f4ff',
                             padding: '1px 5px', borderRadius: 3, whiteSpace: 'nowrap',
                           }}>
-                            {shot.shotId}
+                            {formatGlobalShotId(selectedChapter.id, page.id, shot.shotId)}
                           </Text>
                           <div style={{ flex: 1, fontSize: 13, lineHeight: 1.5 }}>
                             <div style={{ color: '#333', marginBottom: 2 }}>{shot.content}</div>

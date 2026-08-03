@@ -6,7 +6,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, String, Text, Boolean, Integer, DateTime, ForeignKey
+from sqlalchemy import Column, String, Text, Boolean, Integer, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -36,6 +36,8 @@ PROMPT_MODULE_DEFS = [
     {"key": "camera_system",               "label": "镜头系统",       "category": "internal"},
     {"key": "layout_system",               "label": "排版系统",       "category": "internal"},
     {"key": "bubble_system",               "label": "气泡系统",       "category": "internal"},
+    # 校对类
+    {"key": "proofread_prompts",           "label": "生图提示词校对", "category": "internal"},
 ]
 
 
@@ -71,6 +73,10 @@ class PromptModule(Base):
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        UniqueConstraint("template_id", "module_key", name="uq_prompt_modules_template_module"),
+    )
 
     template = relationship("PromptTemplate", back_populates="modules")
 

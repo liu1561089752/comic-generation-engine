@@ -11,13 +11,13 @@ router = APIRouter()
 @router.get("")
 async def global_search(
     q: str = Query("", min_length=1, description="搜索关键词"),
-    module: str = Query("all", description="搜索范围: all/projects/novels/characters/scenes/tasks"),
+    module: str = Query("all", description="搜索范围: all/projects/novels/characters/tasks"),
     type: str = Query(None, description="(兼容) 搜索范围别名"),
     limit: int = Query(5, ge=1, le=50, description="每模块返回条数"),
     user_id: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """全局搜索 - 跨模块搜索项目、小说、人物、场景、任务等（仅当前用户的项目）. """
+    """全局搜索 - 跨模块搜索项目、小说、人物、任务等（仅当前用户的项目）. """
     if not q or not q.strip():
         raise HTTPException(status_code=400, detail="搜索关键词不能为空")
 
@@ -91,31 +91,6 @@ async def global_search(
             for row in rows
         ]
         results["characters"] = characters
-
-    # 搜索场景（仅当前用户项目下的场景）
-    if search_module in ("all", "scenes"):
-        sql = text(
-            "SELECT s.id, s.location, s.description, s.chapter_id "
-            "FROM scenes s "
-            "JOIN chapters ch ON s.chapter_id = ch.id "
-            "JOIN novels n ON ch.novel_id = n.id "
-            "JOIN projects p ON n.project_id = p.id "
-            "WHERE (s.location LIKE :keyword OR s.description LIKE :keyword) "
-            "AND p.user_id = :user_id "
-            "ORDER BY CASE WHEN s.location LIKE :exact THEN 0 ELSE 1 END, s.updated_at DESC "
-            "LIMIT :limit"
-        )
-        rows = await db.execute(sql, {"keyword": keyword, "user_id": user_id, "exact": q.strip(), "limit": limit})
-        scenes = [
-            {
-                "id": str(row[0]),
-                "location": row[1],
-                "description": row[2],
-                "chapter_id": str(row[3]) if row[3] else None,
-            }
-            for row in rows
-        ]
-        results["scenes"] = scenes
 
     # 搜索任务（仅当前用户项目的任务）
     if search_module in ("all", "tasks"):

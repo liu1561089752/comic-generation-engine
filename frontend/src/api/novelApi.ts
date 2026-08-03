@@ -314,4 +314,10 @@ export const novelApi = {
   /** 获取小说的所有小说列表（用于切换小说） */
   listByProject: (projectId: string) =>
     apiClient.get<ApiResponse<ListResponse<Novel>>>(`/projects/${projectId}/novels`),
+
+  /** 校对指定排版章节的生图提示词 */
+  proofreadChapterPrompts: (projectId: string, novelId: string, layoutChapterId: string) =>
+    apiClient.post<ApiResponse<any>>(
+      `/projects/${projectId}/novels/${novelId}/layout-chapters/${layoutChapterId}/proofread-prompts`
+    ),
 }

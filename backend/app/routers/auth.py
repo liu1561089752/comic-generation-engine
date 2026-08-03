@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 from app.core.database import get_db
+from app.core.dependencies import oauth2_scheme
 from app.models.user import User
 from app.core.security import (
     verify_password,
@@ -13,6 +14,7 @@ from app.core.security import (
     create_access_token,
     create_refresh_token,
     decode_token,
+    revoke_token,
 )
 from app.middleware.auth import get_current_user
 from app.schemas.common import ApiResponse
@@ -62,6 +64,7 @@ async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)):
             "id": str(user.id),
             "username": user.username,
             "email": user.email or "",
+            "is_admin": user.is_admin or False,
         },
     })
 
@@ -110,12 +113,15 @@ async def get_me(user_id: str = Depends(get_current_user), db: AsyncSession = De
             "id": str(user.id),
             "username": user.username,
             "email": user.email or "",
+            "is_admin": user.is_admin or False,
         })
     except Exception:
         raise HTTPException(status_code=404, detail="用户不存在")
 
 
 @router.post("/logout")
-async def logout(user_id: str = Depends(get_current_user)):
-    """登出（客户端清除令牌即可）"""
-    return ApiResponse(data={"message": "登出成功"})
+async def logout(token: str = Depends(oauth2_scheme), user_id: str = Depends(get_current_user)):
+    """登出（将当前令牌加入黑名单，立即失效）"""
+    revoke_token(token)
+    logger.info(f"用户 {user_id} 已登出，令牌已撤销")
+    return ApiResponse(data={"message": "登出成功，令牌已失效"})

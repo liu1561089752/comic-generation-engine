@@ -24,7 +24,7 @@ from app.models.layout import LayoutChapter, LayoutPage, ImagePrompt, ReferenceM
 from app.models.novel import ScriptChapter, ScriptShot
 from app.models.storyboard import StoryboardChapter, StoryboardShot
 from app.models.world import WorldBuilding, SceneAsset, Prop, Building, Outfit
-from app.models.character import Character, CharacterReferenceImage
+from app.models.character import Character, CharacterReferenceImage, CharacterState
 from app.repositories.novel_repo import NovelRepository
 from app.infra.prompt_loader import get_prompt
 
@@ -587,6 +587,7 @@ class PromptService:
         references = {
             "character": [],
             "character_ref": [],
+            "character_state": [],
             "scene_asset": [],
             "prop": [],
             "building": [],
@@ -619,6 +620,23 @@ class PromptService:
                 "description": f"{char.name}的{cri.angle or '多角度'}参考图",
                 "tags": cri.tags or [],
                 "category": "character_ref",
+            })
+
+        # CharacterState — each state may have a generated reference image
+        cs_result = await session.execute(
+            select(CharacterState).where(
+                CharacterState.character_id.in_(
+                    select(Character.id).where(Character.project_id == project_id)
+                )
+            )
+        )
+        for cs in cs_result.scalars().all():
+            references["character_state"].append({
+                "id": str(cs.id),
+                "name": f"{cs.name}",
+                "description": cs.description or "",
+                "tags": cs.aliases or "",
+                "category": "character_state",
             })
 
         # Batch queries using IN to avoid N+1 (4 queries total instead of 4N)

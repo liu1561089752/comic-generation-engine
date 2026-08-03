@@ -26,6 +26,7 @@ import {
   ExperimentOutlined,
   DeleteOutlined,
   CloudDownloadOutlined,
+  CheckCircleOutlined,
 } from '@ant-design/icons'
 import { usePipelineStore } from '../../stores/pipelineStore'
 import { novelApi } from '../../api/novelApi'
@@ -34,13 +35,13 @@ import { useTaskProgress } from '../../hooks/useTaskProgress'
 import { characterApi } from '../../api/characterApi'
 import { worldApi, sceneAssetApi, propApi, buildingApi, outfitApi } from '../../api/worldApi'
 import type { LayoutChapter, LayoutPage, Novel } from '../../types/novel'
-import type { Character } from '../../types/character'
+import type { Character, CharacterState } from '../../types/character'
 import type { SceneAsset, Prop, Building, Outfit } from '../../types/world'
 
 const { Text } = Typography
 const { TextArea } = Input
 
-type ReferenceItem = SceneAsset | Prop | Building | Outfit | Character
+type ReferenceItem = SceneAsset | Prop | Building | Outfit | Character | CharacterState
 
 function getRefImageUrl(item: ReferenceItem): string {
   if ('image_url' in item && item.image_url) return item.image_url
@@ -89,6 +90,7 @@ export default function GenerationCenter() {
   // Reference images
   const [worlds, setWorlds] = useState<any[]>([])
   const [characters, setCharacters] = useState<Character[]>([])
+  const [characterStates, setCharacterStates] = useState<CharacterState[]>([])
   const [sceneAssets, setSceneAssets] = useState<SceneAsset[]>([])
   const [props, setProps] = useState<Prop[]>([])
   const [buildings, setBuildings] = useState<Building[]>([])
@@ -112,23 +114,19 @@ export default function GenerationCenter() {
     setDeleteEndPage(totalPages || 1)
   }, [totalPages])
 
-  // 进度统计 - 前100页（与 deleteType 共用同一个选择器）
+  // 进度统计 - 前100页（独立于 deleteType）
+  const [progressViewType, setProgressViewType] = useState<'prompt' | 'reference' | 'page'>('prompt')
   const PROGRESS_LIMIT = 100
   const first100Pages = layoutData.flatMap(ch => ch.pages).slice(0, PROGRESS_LIMIT)
   const progressCount = first100Pages.filter(p => {
-    if (deleteType === 'prompt') return (p.image_prompt || '').trim().length > 0
-    if (deleteType === 'reference') {
+    if (progressViewType === 'prompt') return (p.image_prompt || '').trim().length > 0
+    if (progressViewType === 'reference') {
       const refs = (p as LayoutPage & { reference_ids?: string[] }).reference_ids
       return Array.isArray(refs) && refs.length > 0
     }
-    if (deleteType === 'page') return (p.image_url || '').trim().length > 0
+    if (progressViewType === 'page') return (p.image_url || '').trim().length > 0
     return false
   }).length
-  const progressLabel: Record<string, string> = {
-    prompt: '生图提示词',
-    reference: '参考图',
-    page: '漫画页',
-  }
 
   const { saveStatus, triggerSave, markDirty } = useAutoSave({
     onSave: async () => {
@@ -224,17 +222,26 @@ export default function GenerationCenter() {
 
   // 独立获取角色参考图
   useEffect(() => {
-    if (!projectId) { setCharacters([]); return }
+    if (!projectId) { setCharacters([]); setCharacterStates([]); return }
     let cancelled = false
     characterApi.list(projectId).then((res: any) => {
       if (cancelled) return
       const list: Character[] = res?.data?.items || []
       setCharacters(list.filter(c => c.image_url))
-    }).catch(() => setCharacters([]))
+      const allStates: CharacterState[] = []
+      for (const c of list) {
+        if (c.states) {
+          for (const s of c.states) {
+            if (s.image_url) allStates.push(s)
+          }
+        }
+      }
+      setCharacterStates(allStates)
+    }).catch(() => { setCharacters([]); setCharacterStates([]) })
     return () => { cancelled = true }
   }, [projectId])
 
-  const allReferences: ReferenceItem[] = [...characters, ...sceneAssets, ...props, ...buildings, ...outfits]
+  const allReferences: ReferenceItem[] = [...characters, ...characterStates, ...sceneAssets, ...props, ...buildings, ...outfits]
 
   const selectedChapter = selectedChapterIdx !== null ? layoutData[selectedChapterIdx] ?? null : null
   const selectedPage = selectedChapter && selectedPageIdx !== null
@@ -393,6 +400,25 @@ export default function GenerationCenter() {
     }
   }
 
+  // 校对当前展开的章节的生图提示词
+  const handleProofreadChapter = async (chIdx: number) => {
+    if (!projectId || !selectedNovelId) { message.warning('请先选择小说'); return }
+    const chapter = layoutData[chIdx]
+    if (!chapter) { message.warning('请选择章节'); return }
+    setProofreadLoading(true)
+    try {
+      const res: any = await novelApi.proofreadChapterPrompts(projectId, selectedNovelId, chapter.id)
+      const data = res?.data?.data || res?.data
+      setProofreadResult(data)
+      setProofreadModalOpen(true)
+    } catch (e: any) {
+      const errMsg = e?.response?.data?.detail || e?.message || '校对失败'
+      message.error(errMsg)
+    } finally {
+      setProofreadLoading(false)
+    }
+  }
+
   // 当前页：生图
   const handleGenerateSingleImage = async () => {
     if (!selectedPage) { message.warning('请先选择页面'); return }
@@ -429,6 +455,11 @@ export default function GenerationCenter() {
   const [promptGenLoading, setPromptGenLoading] = useState(false)
   const [batchImageLoading, setBatchImageLoading] = useState(false)
   const [recoverLoading, setRecoverLoading] = useState(false)
+
+  // 校对生图提示词状态
+  const [proofreadLoading, setProofreadLoading] = useState(false)
+  const [proofreadModalOpen, setProofreadModalOpen] = useState(false)
+  const [proofreadResult, setProofreadResult] = useState<any>(null)
 
   const [recoverModalOpen, setRecoverModalOpen] = useState(false)
   const [recoverAuth, setRecoverAuth] = useState('')
@@ -535,7 +566,18 @@ export default function GenerationCenter() {
             <span style={{ fontSize: 11, fontWeight: 600, color: '#1677ff' }}>{progressCount}</span>
             <span style={{ fontSize: 11, color: '#aaa' }}>/</span>
             <span style={{ fontSize: 11, color: '#666' }}>{Math.min(PROGRESS_LIMIT, totalPages)}</span>
-            <span style={{ fontSize: 11, color: '#888' }}>{progressLabel[deleteType]}</span>
+            <Select
+              size="small"
+              value={progressViewType}
+              onChange={v => setProgressViewType(v)}
+              style={{ width: 80, fontSize: 11 }}
+              bordered={false}
+              options={[
+                { value: 'prompt', label: '提示词' },
+                { value: 'reference', label: '参考图' },
+                { value: 'page', label: '漫画页' },
+              ]}
+            />
           </div>
         </Space>
         <Space>
@@ -595,6 +637,48 @@ export default function GenerationCenter() {
         </div>
       </Modal>
 
+      {/* === 校对生图提示词结果 Modal === */}
+      <Modal
+        title={`校对结果 - ${proofreadResult?.chapter_title || ''}`}
+        open={proofreadModalOpen}
+        onCancel={() => setProofreadModalOpen(false)}
+        footer={
+          <Button onClick={() => setProofreadModalOpen(false)} type="primary">
+            关闭
+          </Button>
+        }
+        width={800}
+        destroyOnClose
+      >
+        {proofreadResult && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <Alert
+              message={`角色映射表共 ${proofreadResult.alias_mapping_count} 条`}
+              type="info"
+              showIcon
+              style={{ fontSize: 12 }}
+            />
+            {proofreadResult.novel_content_preview && (
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>小说原文（预览）</div>
+                <div style={{ fontSize: 12, color: '#666', background: '#f5f5f5', padding: '6px 10px', borderRadius: 4, maxHeight: 120, overflow: 'auto', whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
+                  {proofreadResult.novel_content_preview}
+                </div>
+              </div>
+            )}
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>AI 校对结果</div>
+              <Input.TextArea
+                value={proofreadResult.proofread_content}
+                readOnly
+                rows={16}
+                style={{ fontSize: 12, fontFamily: 'monospace', lineHeight: 1.6 }}
+              />
+            </div>
+          </div>
+        )}
+      </Modal>
+
       {/* === Body === */}
       <div style={{ flex: 1, display: 'flex', gap: 10, overflow: 'hidden' }}>
         {/* === Left: Chapter List === */}
@@ -610,6 +694,18 @@ export default function GenerationCenter() {
                 </div>
                 {expandedChapters.has(chIdx) && (
                   <div style={{ paddingLeft: 12 }}>
+                    <div style={{ padding: '2px 0 4px 0' }}>
+                      <Button
+                        size="small"
+                        icon={<CheckCircleOutlined />}
+                        onClick={(e) => { e.stopPropagation(); handleProofreadChapter(chIdx) }}
+                        loading={proofreadLoading}
+                        disabled={ch.pages.length === 0}
+                        style={{ fontSize: 10, height: 20, padding: '0 4px', width: '100%' }}
+                      >
+                        校对提示词
+                      </Button>
+                    </div>
                     {ch.pages.map((pg, pgIdx) => (
                       <div key={pg.id || pgIdx} onClick={() => selectPage(chIdx, pgIdx)}
                         style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px', cursor: 'pointer', borderRadius: 4, background: selectedChapterIdx === chIdx && selectedPageIdx === pgIdx ? '#1677ff' : 'transparent', color: selectedChapterIdx === chIdx && selectedPageIdx === pgIdx ? '#fff' : 'inherit', marginBottom: 1 }}>
@@ -637,10 +733,12 @@ export default function GenerationCenter() {
               <div style={{ flex: 1, overflow: 'hidden', background: '#f5f5f5', borderRadius: 8, position: 'relative', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
                 <div style={{ width: '100%', height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center', padding: 4 }}>
                   {selectedPage.image_url ? (
-                    <img
+                    <Image
+                      rootClassName="gen-page-image"
                       src={getImageSrc(selectedPage.image_url)}
                       alt={selectedPage.page_id}
-                      style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', borderRadius: 4, display: 'block' }}
+                      style={{ width: '100%', height: '100%', objectFit: 'contain', borderRadius: 4, display: 'block' }}
+                      preview={{ src: getImageSrc(selectedPage.image_url) }}
                     />
                   ) : (
                     <Text type="secondary" style={{ fontSize: 14 }}>暂无图片</Text>
@@ -663,7 +761,7 @@ export default function GenerationCenter() {
 
               {/* Reference images strip */}
               <div style={{ flexShrink: 0, height: 250, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                <Text type="secondary" style={{ fontSize: 11 }}>参考图（角色/场景/道具/建筑/服装）</Text>
+                <Text type="secondary" style={{ fontSize: 11 }}>参考图（角色/角色状态/场景/道具/建筑/服装）</Text>
                 {allReferences.length === 0 ? (
                   <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fafafa', borderRadius: 4, fontSize: 11, color: '#999' }}>
                     暂无参考图，请先在世界观中添加

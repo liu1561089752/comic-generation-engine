@@ -93,7 +93,11 @@ class ScriptService:
                 await tracker.update_progress(50, "AI 处理完成，保存脚本数据...")
 
             parsed = parse_llm_json(result.content)
-            chapters_data = parsed.get("chapters", [])
+            # LLM 可能返回 {"chapters": [...]}，也可能直接返回 [...]；两种都要兼容
+            if isinstance(parsed, dict):
+                chapters_data = parsed.get("chapters", [])
+            else:
+                chapters_data = parsed if isinstance(parsed, list) else []
 
             # Step 4: Short write transaction — save results
             async with async_session_factory() as write_session:
@@ -242,7 +246,10 @@ class ScriptService:
                 novel_id, target_chapter.sort_order, shifted_shot_ids
             )
 
-        new_shot_id = str(int(shot_id) + 1).zfill(len(shot_id))
+        try:
+            new_shot_id = str(int(shot_id) + 1).zfill(len(shot_id))
+        except ValueError:
+            new_shot_id = f"{shot_id}-copy"
         new_shot = ScriptShot(
             chapter_id=chapter_id,
             shot_id=new_shot_id,

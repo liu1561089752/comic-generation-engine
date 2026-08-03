@@ -19,6 +19,7 @@ import {
   Avatar,
   Select,
   Image,
+  Divider,
 } from 'antd'
 import {
   ArrowLeftOutlined,
@@ -28,11 +29,12 @@ import {
   TeamOutlined,
   UploadOutlined,
   SmileOutlined,
+  PictureOutlined,
 } from '@ant-design/icons'
 import ReactEChartsCore from 'echarts-for-react'
 import { useCharacterStore } from '../../stores/characterStore'
 import { EXPRESSION_TYPE_MAP } from '../../types/character'
-import type { Character, CharacterExpression } from '../../types/character'
+import type { Character, CharacterState, CharacterExpression } from '../../types/character'
 import { characterApi } from '../../api/characterApi'
 import CharacterForm from '../../components/CharacterForm'
 import EmptyState from '../../components/common/EmptyState'
@@ -73,6 +75,8 @@ export default function CharacterDetail() {
   const [outfitModalOpen, setOutfitModalOpen] = useState(false)
   const [expressionModalOpen, setExpressionModalOpen] = useState(false)
   const [editingExpression, setEditingExpression] = useState<CharacterExpression | null>(null)
+  const [generatingStateId, setGeneratingStateId] = useState<string | null>(null)
+  const [stateImageMap, setStateImageMap] = useState<Record<string, string>>({})
   const [relationForm] = Form.useForm()
   const [outfitForm] = Form.useForm()
   const [expressionForm] = Form.useForm()
@@ -215,6 +219,23 @@ export default function CharacterDetail() {
         }
       },
     })
+  }
+
+  const handleGenerateStateImage = async (stateId: string) => {
+    if (!projectId || !characterId) return
+    setGeneratingStateId(stateId)
+    try {
+      const res: any = await characterApi.generateStateImage(projectId, characterId, stateId)
+      const stateName = res.data?.state_name || ''
+      const imageUrl = res.data?.image_url || ''
+      setStateImageMap((prev) => ({ ...prev, [stateId]: imageUrl }))
+      message.success(`状态「${stateName}」形象生成成功`)
+      fetchCharacter(projectId, characterId)
+    } catch (e: any) {
+      message.error(e.response?.data?.detail || '生成失败')
+    } finally {
+      setGeneratingStateId(null)
+    }
   }
 
   const getGraphOption = () => {
@@ -412,6 +433,54 @@ export default function CharacterDetail() {
               {formatDate(currentCharacter.updated_at)}
             </Descriptions.Item>
           </Descriptions>
+          {currentCharacter.states && currentCharacter.states.length > 0 && (
+            <>
+              <Divider />
+              <div>
+                <div style={{ fontWeight: 600, marginBottom: 12, fontSize: 14 }}>角色状态（年龄/身份阶段）</div>
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  {currentCharacter.states.map((s: CharacterState) => {
+                    const stateImgUrl = s.image_url || stateImageMap[s.id]
+                    return (
+                      <Card key={s.id} size="small" style={{ background: '#fafafa' }}>
+                        <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                          <Space>
+                            <Tag color="blue">{s.name}</Tag>
+                            {s.sort_order && <Tag color="default">{s.sort_order}</Tag>}
+                          </Space>
+                          {stateImgUrl && (
+                            <div style={{ marginBottom: 8 }}>
+                              <Image
+                                src={stateImgUrl}
+                                alt={s.name}
+                                width={120}
+                                height={68}
+                                style={{ objectFit: 'cover', borderRadius: 4 }}
+                                preview={{ src: stateImgUrl }}
+                              />
+                            </div>
+                          )}
+                          {s.description && (
+                            <div style={{ fontSize: 13, color: '#666', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                              {s.description}
+                            </div>
+                          )}
+                          <Button
+                            size="small"
+                            icon={<PictureOutlined />}
+                            loading={generatingStateId === s.id}
+                            onClick={() => handleGenerateStateImage(s.id)}
+                          >
+                            生成形象
+                          </Button>
+                        </Space>
+                      </Card>
+                    )
+                  })}
+                </Space>
+              </div>
+            </>
+          )}
         </Card>
       ),
     },

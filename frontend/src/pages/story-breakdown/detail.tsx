@@ -84,6 +84,23 @@ export default function StoryBreakdownDetail() {
   // 获取选中的章节（从store实时获取）
   const selectedChapter = scriptData.find((ch) => ch.id === selectedChapterId) || null
 
+  // 计算 shot 的全局连续序号（仅用于展示，不修改数据库里的 shot_id）。
+  // 后端 shot_id 是按章独立编号的（"01"、"02"...），跨章会重复，
+  // 但 split_shot 与分镜/排版都依赖 (章节序号, shot_id) 组合键，
+  // 因此只在 UI 层把 shot.id 映射成跨章连续序号展示。
+  const shotGlobalIndexMap = new Map<string, number>()
+  let _globalCounter = 1
+  scriptData.forEach((ch) => {
+    ch.shots.forEach((s) => {
+      shotGlobalIndexMap.set(s.id, _globalCounter++)
+    })
+  })
+  const formatGlobalShotId = (shot: { id: string } | null | undefined): string => {
+    if (!shot) return '--'
+    const n = shotGlobalIndexMap.get(shot.id)
+    return n == null ? '--' : String(n).padStart(2, '0')
+  }
+
   // 一键生成脚本
   const handleGenerateScript = async () => {
     if (!projectId || !novelId) return
@@ -410,7 +427,7 @@ export default function StoryBreakdownDetail() {
                           borderRadius: 4,
                         }}
                       >
-                        {shot.shot_id}
+                        {formatGlobalShotId(shot)}
                       </Text>
                     </div>
 
@@ -517,7 +534,7 @@ export default function StoryBreakdownDetail() {
                   fontWeight: 600,
                 }}
               >
-                {splittingShot?.shot_id}
+                {formatGlobalShotId(splittingShot)}
               </Text>
             </div>
             <div style={{ flex: 1 }}>
@@ -552,8 +569,8 @@ export default function StoryBreakdownDetail() {
                   fontWeight: 600,
                 }}
               >
-                {splittingShot?.shot_id
-                  ? String(Number(splittingShot.shot_id) + 1).padStart(splittingShot.shot_id.length, '0')
+                {splittingShot && shotGlobalIndexMap.has(splittingShot.id)
+                  ? String((shotGlobalIndexMap.get(splittingShot.id) || 0) + 1).padStart(2, '0')
                   : '--'}
               </Text>
             </div>

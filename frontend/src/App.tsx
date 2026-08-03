@@ -1,43 +1,46 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { lazy, Suspense } from 'react'
+import { Suspense } from 'react'
+import { Spin } from 'antd'
 import AppLayout from './components/Layout'
+import ErrorBoundary from './components/ErrorBoundary'
 import { useAuthStore } from './stores/authStore'
-
-const Dashboard = lazy(() => import('./pages/Dashboard'))
-const Login = lazy(() => import('./pages/Login'))
-const ProjectDetail = lazy(() => import('./pages/projects/[id]'))
-const ProjectList = lazy(() => import('./pages/projects'))
-const NovelList = lazy(() => import('./pages/novels'))
-const NovelDetail = lazy(() => import('./pages/novels/[id]'))
-const NovelEditor = lazy(() => import('./pages/novels/editor'))
-const StoryBreakdownLanding = lazy(() => import('./pages/story-breakdown'))
-const StoryBreakdownDetail = lazy(() => import('./pages/story-breakdown/detail'))
-const ProjectStoryBreakdown = lazy(() => import('./pages/story-breakdown/project-entry'))
-const ProjectStoryboard = lazy(() => import('./pages/storyboard/project-storyboard'))
-const ProjectLayoutPage = lazy(() => import('./pages/layout/project-layout'))
-const CharacterList = lazy(() => import('./pages/characters'))
-const CharacterGlobalList = lazy(() => import('./pages/characters/global'))
-const CharacterDetail = lazy(() => import('./pages/characters/[id]'))
-const CharacterRelations = lazy(() => import('./pages/characters/relations'))
-const WorldList = lazy(() => import('./pages/worlds'))
-const WorldDetail = lazy(() => import('./pages/worlds/[id]'))
-const StyleTemplateList = lazy(() => import('./pages/style-templates'))
-const EditorList = lazy(() => import('./pages/editor'))
-const ComicEditor = lazy(() => import('./pages/editor/[pageId]'))
-const ExportCenter = lazy(() => import('./pages/export'))
-const TaskCenter = lazy(() => import('./pages/tasks'))
-const ModelCenter = lazy(() => import('./pages/models'))
-const GenerationCenter = lazy(() => import('./pages/generation'))
-const QualityCenter = lazy(() => import('./pages/quality'))
-const NotificationsPage = lazy(() => import('./pages/notifications'))
-const SystemSettings = lazy(() => import('./pages/system'))
-const StoryboardCenter = lazy(() => import('./pages/storyboard'))
-const LayoutCenter = lazy(() => import('./pages/layout'))
-const TextCenter = lazy(() => import('./pages/text-center'))
-const PromptCenter = lazy(() => import('./pages/prompt-center'))
-const ResourceCenter = lazy(() => import('./pages/resources'))
-const PluginCenter = lazy(() => import('./pages/plugins'))
-const HelpCenter = lazy(() => import('./pages/help'))
+import {
+  Dashboard,
+  Login,
+  ProjectDetail,
+  ProjectList,
+  NovelList,
+  NovelDetail,
+  NovelEditor,
+  StoryBreakdownLanding,
+  StoryBreakdownDetail,
+  ProjectStoryBreakdown,
+  ProjectStoryboard,
+  ProjectLayoutPage,
+  CharacterList,
+  CharacterGlobalList,
+  CharacterDetail,
+  CharacterRelations,
+  WorldList,
+  WorldDetail,
+  StyleTemplateList,
+  EditorList,
+  ComicEditor,
+  ExportCenter,
+  TaskCenter,
+  ModelCenter,
+  GenerationCenter,
+  QualityCenter,
+  NotificationsPage,
+  SystemSettings,
+  StoryboardCenter,
+  LayoutCenter,
+  TextCenter,
+  PromptCenter,
+  ResourceCenter,
+  PluginCenter,
+  HelpCenter,
+} from './routeComponents'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated)
@@ -47,16 +50,28 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+/**
+ * 轻量级 Suspense fallback
+ *
+ * 设计要点：
+ *  - 不使用全屏白底，避免与目标页面产生明显的背景反差
+ *  - 只在内容区显示 Spin，保持左侧导航栏和顶部 Header 不被遮挡
+ *  - Spin 颜色随主题色，视觉干扰最小
+ */
+function RouteFallback() {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 'calc(100vh - 120px)' }}>
+      <Spin size="large" />
+    </div>
+  )
+}
+
 function App() {
   return (
     <BrowserRouter>
-      <Suspense fallback={
-        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', color: '#888', fontSize: '14px' }}>
-          加载中...
-        </div>
-      }>
+      <ErrorBoundary>
       <Routes>
-        <Route path="/login" element={<Login />} />
+        <Route path="/login" element={<Suspense fallback={null}><Login /></Suspense>} />
         <Route
           path="/"
           element={
@@ -65,51 +80,51 @@ function App() {
             </ProtectedRoute>
           }
         >
-          <Route index element={<Dashboard />} />
-          <Route path="projects" element={<ProjectList />} />
-          <Route path="projects/:id" element={<ProjectDetail />}>
-            <Route path="novels" element={<NovelList />} />
-            <Route path="novels/:novelId" element={<NovelDetail />} />
-            <Route path="novels/:novelId/editor" element={<NovelEditor />} />
-            <Route path="novels/:novelId/story-breakdown" element={<StoryBreakdownDetail />} />
-            <Route path="characters" element={<CharacterList />} />
-            <Route path="characters/:characterId" element={<CharacterDetail />} />
-            <Route path="characters/relations" element={<CharacterRelations />} />
-            <Route path="worlds" element={<WorldList />} />
-            <Route path="worlds/:worldId" element={<WorldDetail />} />
-            <Route path="style-templates" element={<StyleTemplateList />} />
-            <Route path="story-breakdown" element={<ProjectStoryBreakdown />} />
-            <Route path="storyboard" element={<ProjectStoryboard />} />
-            <Route path="novels/:novelId/storyboard" element={<ProjectStoryboard />} />
-            <Route path="layout" element={<ProjectLayoutPage />} />
-            <Route path="novels/:novelId/layout" element={<ProjectLayoutPage />} />            
-            <Route path="generation" element={<GenerationCenter />} />
-            <Route path="quality" element={<QualityCenter />} />
-            <Route path="editor" element={<EditorList />} />
-            <Route path="editor/:pageId" element={<ComicEditor />} />
-            <Route path="export" element={<ExportCenter />} />
-          </Route>
-          <Route path="characters" element={<CharacterGlobalList />} />
-          <Route path="novels" element={<NovelList />} />
-          <Route path="editor" element={<EditorList />} />
-          <Route path="export" element={<ExportCenter />} />
-          <Route path="storyboard" element={<StoryboardCenter />} />
-          <Route path="layout" element={<LayoutCenter />} />
-          <Route path="story-breakdown" element={<StoryBreakdownLanding />} />
-          <Route path="text-center" element={<TextCenter />} />
-          <Route path="prompts" element={<PromptCenter />} />
-          <Route path="models" element={<ModelCenter />} />
-          <Route path="generation" element={<GenerationCenter />} />
-          <Route path="quality" element={<QualityCenter />} />
-          <Route path="tasks" element={<TaskCenter />} />
-          <Route path="notifications" element={<NotificationsPage />} />
-          <Route path="system" element={<SystemSettings />} />
-          <Route path="resources" element={<ResourceCenter />} />
-          <Route path="plugins" element={<PluginCenter />} />
-          <Route path="help" element={<HelpCenter />} />
+          <Route index element={<Suspense fallback={<RouteFallback />}><Dashboard /></Suspense>} />
+          <Route path="projects" element={<Suspense fallback={<RouteFallback />}><ProjectList /></Suspense>} />
+          <Route path="projects/:id" element={<Suspense fallback={<RouteFallback />}><ProjectDetail /></Suspense>}>
+            <Route path="novels" element={<Suspense fallback={<RouteFallback />}><NovelList /></Suspense>} />
+            <Route path="novels/:novelId" element={<Suspense fallback={<RouteFallback />}><NovelDetail /></Suspense>} />
+            <Route path="novels/:novelId/editor" element={<Suspense fallback={<RouteFallback />}><NovelEditor /></Suspense>} />
+            <Route path="novels/:novelId/story-breakdown" element={<Suspense fallback={<RouteFallback />}><StoryBreakdownDetail /></Suspense>} />
+            <Route path="characters" element={<Suspense fallback={<RouteFallback />}><CharacterList /></Suspense>} />
+            <Route path="characters/:characterId" element={<Suspense fallback={<RouteFallback />}><CharacterDetail /></Suspense>} />
+            <Route path="characters/relations" element={<Suspense fallback={<RouteFallback />}><CharacterRelations /></Suspense>} />
+            <Route path="worlds" element={<Suspense fallback={<RouteFallback />}><WorldList /></Suspense>} />
+            <Route path="worlds/:worldId" element={<Suspense fallback={<RouteFallback />}><WorldDetail /></Suspense>} />
+            <Route path="style-templates" element={<Suspense fallback={<RouteFallback />}><StyleTemplateList /></Suspense>} />
+            <Route path="story-breakdown" element={<Suspense fallback={<RouteFallback />}><ProjectStoryBreakdown /></Suspense>} />
+            <Route path="storyboard" element={<Suspense fallback={<RouteFallback />}><ProjectStoryboard /></Suspense>} />
+            <Route path="novels/:novelId/storyboard" element={<Suspense fallback={<RouteFallback />}><ProjectStoryboard /></Suspense>} />
+            <Route path="layout" element={<Suspense fallback={<RouteFallback />}><ProjectLayoutPage /></Suspense>} />
+            <Route path="novels/:novelId/layout" element={<Suspense fallback={<RouteFallback />}><ProjectLayoutPage /></Suspense>} />
+            <Route path="generation" element={<Suspense fallback={<RouteFallback />}><GenerationCenter /></Suspense>} />
+            <Route path="quality" element={<Suspense fallback={<RouteFallback />}><QualityCenter /></Suspense>} />
+            <Route path="editor" element={<Suspense fallback={<RouteFallback />}><EditorList /></Suspense>} />
+            <Route path="editor/:pageId" element={<Suspense fallback={<RouteFallback />}><ComicEditor /></Suspense>} />
+            <Route path="export" element={<Suspense fallback={<RouteFallback />}><ExportCenter /></Suspense>} />
+        </Route>
+          <Route path="characters" element={<Suspense fallback={<RouteFallback />}><CharacterGlobalList /></Suspense>} />
+          <Route path="novels" element={<Suspense fallback={<RouteFallback />}><NovelList /></Suspense>} />
+          <Route path="editor" element={<Suspense fallback={<RouteFallback />}><EditorList /></Suspense>} />
+          <Route path="export" element={<Suspense fallback={<RouteFallback />}><ExportCenter /></Suspense>} />
+          <Route path="storyboard" element={<Suspense fallback={<RouteFallback />}><StoryboardCenter /></Suspense>} />
+          <Route path="layout" element={<Suspense fallback={<RouteFallback />}><LayoutCenter /></Suspense>} />
+          <Route path="story-breakdown" element={<Suspense fallback={<RouteFallback />}><StoryBreakdownLanding /></Suspense>} />
+          <Route path="text-center" element={<Suspense fallback={<RouteFallback />}><TextCenter /></Suspense>} />
+          <Route path="prompts" element={<Suspense fallback={<RouteFallback />}><PromptCenter /></Suspense>} />
+          <Route path="models" element={<Suspense fallback={<RouteFallback />}><ModelCenter /></Suspense>} />
+          <Route path="generation" element={<Suspense fallback={<RouteFallback />}><GenerationCenter /></Suspense>} />
+          <Route path="quality" element={<Suspense fallback={<RouteFallback />}><QualityCenter /></Suspense>} />
+          <Route path="tasks" element={<Suspense fallback={<RouteFallback />}><TaskCenter /></Suspense>} />
+          <Route path="notifications" element={<Suspense fallback={<RouteFallback />}><NotificationsPage /></Suspense>} />
+          <Route path="system" element={<Suspense fallback={<RouteFallback />}><SystemSettings /></Suspense>} />
+          <Route path="resources" element={<Suspense fallback={<RouteFallback />}><ResourceCenter /></Suspense>} />
+          <Route path="plugins" element={<Suspense fallback={<RouteFallback />}><PluginCenter /></Suspense>} />
+          <Route path="help" element={<Suspense fallback={<RouteFallback />}><HelpCenter /></Suspense>} />
         </Route>
       </Routes>
-      </Suspense>
+      </ErrorBoundary>
     </BrowserRouter>
   )
 }

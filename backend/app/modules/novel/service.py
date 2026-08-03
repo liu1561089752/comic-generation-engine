@@ -100,6 +100,90 @@ class NovelService:
             "chapter_count": 1,
         }
 
+    async def _read_novel_text(self, novel_id: UUID) -> str:
+        """短事务读取小说文本，返回截断后的文本。"""
+        async with async_session_factory() as read_session:
+            novel = await NovelRepository(read_session).get(novel_id)
+            if novel is None:
+                raise ValueError("小说不存在")
+            raw = novel.raw_text or ""
+            if not raw.strip():
+                raise ValueError("小说文本为空")
+
+        MAX_CHARS = 50000
+        if len(raw) > MAX_CHARS:
+            logger.warning(
+                f"小说文本长度 {len(raw)} 超过 {MAX_CHARS} 字符，后部分将被截断。"
+                f"建议后续实现分块处理。"
+            )
+        return raw[:MAX_CHARS]
+
+    async def _call_preprocess_ai(self, raw_content: str) -> dict:
+        """调用 AI 进行小说预处理（章节拆分），不持有 DB session。"""
+        llm = LLMAdapter(
+            api_key=settings.LLM_API_KEY,
+            api_base=settings.LLM_API_BASE,
+            model=settings.LLM_MODEL or "gpt-4o",
+        )
+        system_prompt = await get_prompt("novel_preprocess")
+        messages = [
+            ChatMessage(role="system", content=system_prompt),
+            ChatMessage(role="user", content=raw_content),
+        ]
+        result = await llm.chat(messages=messages, temperature=0.2)
+        return parse_llm_json(result.content)
+
+    async def _save_preprocess_result(self, novel_id: UUID, chapters_data: list, raw: str) -> dict:
+        """短事务保存预处理结果：删除旧章节、创建新章节、更新小说统计。"""
+        cleaned = self._clean_text(raw)
+        word_count = self._count_words(cleaned)
+
+        async with async_session_factory() as write_session:
+            novel_repo = NovelRepository(write_session)
+            chapter_repo = ChapterRepository(write_session)
+            paragraph_repo = ParagraphRepository(write_session)
+
+            valid_chapters = [ch for ch in chapters_data if ch.get("shots")]
+            if not valid_chapters:
+                raise ValueError("AI 未返回有效章节数据，已保留原有章节")
+
+            old_chapters = await chapter_repo.list_all(novel_id=novel_id)
+            for ch in old_chapters:
+                await chapter_repo.delete(ch.id)
+
+            for idx, ch in enumerate(valid_chapters, start=1):
+                chapter_title = ch.get("chapterTitle", "")
+                shots = ch.get("shots", [])
+                shot_content = "\n".join(s["content"] for s in shots if s.get("content"))
+                chapter = await chapter_repo.create(
+                    novel_id=novel_id, chapter_number=idx,
+                    title=chapter_title, content=shot_content, status="pending",
+                )
+                paragraphs = self._split_paragraphs(shot_content)
+                for i, para_text in enumerate(paragraphs):
+                    num_str = str(i + 1).zfill(4)
+                    await paragraph_repo.create(
+                        chapter_id=chapter.id, paragraph_number=num_str,
+                        text=para_text, sort_order=i,
+                    )
+
+            remaining_chapters = await chapter_repo.list_all(
+                novel_id=novel_id, order_by=Chapter.chapter_number.asc()
+            )
+            for idx, ch in enumerate(remaining_chapters):
+                if ch.chapter_number != idx + 1:
+                    await chapter_repo.update(ch.id, chapter_number=idx + 1)
+
+            await novel_repo.update(novel_id, cleaned_text=cleaned, word_count=word_count)
+            await write_session.commit()
+
+        return {
+            "novel_id": str(novel_id),
+            "word_count": word_count,
+            "chapters": chapters_data,
+            "chapter_count": len(chapters_data),
+        }
+
     async def preprocess_novel(self, novel_id: UUID, tracker: Optional[TaskProgressTracker] = None) -> dict:
         """预处理小说文本（调用 AI 进行章节拆分和镜头划分）.
 
@@ -107,117 +191,24 @@ class NovelService:
         1. Short read: get novel text
         2. AI call (no session held)
         3. Short write: create chapters/paragraphs + renumber + update novel
+
+        已拆分为 _read_novel_text → _call_preprocess_ai → _save_preprocess_result 三个子方法。
         """
         if tracker:
             await tracker.set_running("开始预处理小说...")
 
-        # Step 1: Short read — get novel text
-        async with async_session_factory() as read_session:
-            novel = await NovelRepository(read_session).get(novel_id)
-            if novel is None:
-                raise ValueError("小说不存在")
-
-            raw = novel.raw_text or ""
-            if not raw.strip():
-                raise ValueError("小说文本为空")
-
-        # 问题 1: 不再静默截断到 8000 字符。GPT-4o 支持 128k token，
-        # 50000 字符（约 50k-100k token）可覆盖大部分中短篇。
-        MAX_CHARS = 50000
-        if len(raw) > MAX_CHARS:
-            logger.warning(
-                f"小说文本长度 {len(raw)} 超过 {MAX_CHARS} 字符，后部分将被截断。"
-                f"建议后续实现分块处理。"
-            )
-        user_content = raw[:MAX_CHARS]
-
-        # Step 2: AI call (no session held)
-        llm = LLMAdapter(
-            api_key=settings.LLM_API_KEY,
-            api_base=settings.LLM_API_BASE,
-            model=settings.LLM_MODEL or "gpt-4o",
-        )
-
-        system_prompt = await get_prompt("novel_preprocess")
-        messages = [
-            ChatMessage(role="system", content=system_prompt),
-            ChatMessage(role="user", content=user_content),
-        ]
+        raw = await self._read_novel_text(novel_id)
 
         try:
-            result = await llm.chat(messages=messages, temperature=0.2)
+            parsed = await self._call_preprocess_ai(raw)
             if tracker:
                 await tracker.update_progress(70, "AI 处理完成，保存章节数据...")
 
-            parsed = parse_llm_json(result.content)
-            cleaned = self._clean_text(raw)
-            word_count = self._count_words(cleaned)
             chapters_data = parsed.get("chapters", [])
-
-            # Step 3: Short write — create chapters/paragraphs + renumber + update novel
-            async with async_session_factory() as write_session:
-                novel_repo = NovelRepository(write_session)
-                chapter_repo = ChapterRepository(write_session)
-                paragraph_repo = ParagraphRepository(write_session)
-
-                # 只有带 shots 的章节才有实际内容
-                valid_chapters = [ch for ch in chapters_data if ch.get("shots")]
-                if not valid_chapters:
-                    raise ValueError("AI 未返回有效章节数据，已保留原有章节")
-
-                # 清理该小说的全部旧章节：上传时整本小说作为第 1 章存入，
-                # 若此前已预处理过，库里还留着上一次拆分出的第 1..N 章。
-                # 必须全部删除才能保证预处理幂等，否则旧章节会与本次拆分结果混在一起，
-                # 导致章节数翻倍、内容重复、顺序错乱。
-                # chapter_repo.delete 走 ORM session.delete，Chapter.paragraphs /
-                # Chapter.versions 均配置 cascade="all, delete-orphan"，段落与版本会级联删除。
-                old_chapters = await chapter_repo.list_all(novel_id=novel_id)
-                for ch in old_chapters:
-                    await chapter_repo.delete(ch.id)
-
-                # 旧章节已清空，直接从 1 开始连续编号
-                for idx, ch in enumerate(valid_chapters, start=1):
-                    chapter_title = ch.get("chapterTitle", "")
-                    shots = ch.get("shots", [])
-                    shot_content = "\n".join(s["content"] for s in shots if s.get("content"))
-                    chapter = await chapter_repo.create(
-                        novel_id=novel_id,
-                        chapter_number=idx,
-                        title=chapter_title,
-                        content=shot_content,
-                        status="pending",
-                    )
-                    paragraphs = self._split_paragraphs(shot_content)
-                    for i, para_text in enumerate(paragraphs):
-                        num_str = str(i + 1).zfill(4)
-                        await paragraph_repo.create(
-                            chapter_id=chapter.id,
-                            paragraph_number=num_str,
-                            text=para_text,
-                            sort_order=i,
-                        )
-
-                # 重新编号所有章节，从1开始（必须按章节号升序，list_all 默认是 created_at 倒序）
-                remaining_chapters = await chapter_repo.list_all(
-                    novel_id=novel_id, order_by=Chapter.chapter_number.asc()
-                )
-                for idx, ch in enumerate(remaining_chapters):
-                    if ch.chapter_number != idx + 1:
-                        await chapter_repo.update(ch.id, chapter_number=idx + 1)
-
-                await novel_repo.update(novel_id, cleaned_text=cleaned, word_count=word_count)
-                await write_session.commit()
+            result_data = await self._save_preprocess_result(novel_id, chapters_data, raw)
 
             if tracker:
                 await tracker.update_progress(90, "保存完成")
-
-            result_data = {
-                "novel_id": str(novel_id),
-                "word_count": word_count,
-                "chapters": chapters_data,
-                "chapter_count": len(chapters_data),
-            }
-            if tracker:
                 await tracker.complete(result_data)
             return result_data
         except Exception as e:

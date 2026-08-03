@@ -20,7 +20,7 @@ from app.core.llm_utils import parse_llm_json
 from app.infra.adapters.llm_adapter import LLMAdapter
 from app.infra.adapters.base_llm import ChatMessage
 from app.infra.task_progress import TaskProgressTracker
-from app.models.novel import ScriptChapter, ScriptShot
+from app.models.novel import Novel, ScriptChapter, ScriptShot
 from app.models.storyboard import StoryboardChapter, StoryboardShot
 from app.repositories.novel_repo import NovelRepository
 from app.infra.prompt_loader import get_prompt
@@ -35,16 +35,20 @@ class StoryboardService:
         self.session = session
         self.novel_repo = NovelRepository(session)
 
-    async def _call_storyboard_llm(self, chapter_data: dict) -> List[dict]:
+    async def _call_storyboard_llm(self, chapter_data: dict, novel_text: str = "") -> List[dict]:
         llm = LLMAdapter(
             api_key=settings.LLM_API_KEY,
             api_base=settings.LLM_API_BASE,
             model=settings.LLM_MODEL or "gpt-4o",
         )
         system_prompt = await get_prompt("storyboard_generation")
+        user_content = ""
+        if novel_text:
+            user_content = f"小说原始完整文本：\n{novel_text}\n\n"
+        user_content += json.dumps(chapter_data, ensure_ascii=False)
         messages = [
             ChatMessage(role="system", content=system_prompt),
-            ChatMessage(role="user", content=json.dumps(chapter_data, ensure_ascii=False)),
+            ChatMessage(role="user", content=user_content),
         ]
         result = await llm.chat(messages=messages)
         parsed = parse_llm_json(result.content)
@@ -59,17 +63,29 @@ class StoryboardService:
         return shots
 
     async def generate_storyboard(self, novel_id: UUID, tracker: Optional[TaskProgressTracker] = None) -> dict:
-        """T3 D42: Short transaction pattern for AI generation."""
+        """T3 D42: Short transaction pattern for AI generation.
+
+        增量补生成：对比脚本章节与已有分镜章节，只对缺失章节调用 AI。
+        """
         if tracker:
             await tracker.set_running("开始生成各章节分镜...")
 
         # Step 1: Short read — get script data as input
         async with async_session_factory() as read_session:
+            novel = await read_session.get(Novel, novel_id)
+            if novel is None:
+                raise ValueError("小说不存在")
+            novel_text = novel.raw_text or novel.cleaned_text or ""
+
+            MAX_TEXT_CHARS = 50000
+            if len(novel_text) > MAX_TEXT_CHARS:
+                logger.warning(f"小说原始文本长度 {len(novel_text)} 超过 {MAX_TEXT_CHARS} 字符，附加到提示词时将被截断。")
+                novel_text = novel_text[:MAX_TEXT_CHARS]
+
             script_chapters = await self._get_script_chapters_session(read_session, novel_id)
             if not script_chapters:
                 raise ValueError("请先生成脚本")
 
-            chapters_input = []
             chapter_ids = [ch.id for ch in script_chapters]
             all_shots_result = await read_session.execute(
                 select(ScriptShot)
@@ -80,6 +96,7 @@ class StoryboardService:
             for s in all_shots_result.scalars().all():
                 shots_by_chapter.setdefault(s.chapter_id, []).append(s)
 
+            chapters_input = []
             for ch in script_chapters:
                 shots_data = [
                     {"shotId": s.shot_id, "content": s.content}
@@ -92,29 +109,37 @@ class StoryboardService:
                 })
             source_version = str(script_chapters[0].source_version) if script_chapters and script_chapters[0].source_version else None
 
-        # Step 2: Check existing (short read)
+        # Step 2: Filter out chapters that already have storyboard (incremental)
         async with async_session_factory() as check_session:
             existing = await self._get_storyboard_chapters_session(check_session, novel_id)
-            if existing:
-                result_data = await self._build_storyboard_response_session(check_session, novel_id)
-                if tracker:
-                    await tracker.complete(result_data, "分镜已存在，跳过生成")
-                return result_data
+            existing_titles = {ch.title for ch in existing}
+            pending_input = [ch for ch in chapters_input if ch["chapterTitle"] not in existing_titles]
+
+        if not pending_input:
+            async with async_session_factory() as result_session:
+                result_data = await self._build_storyboard_response_session(result_session, novel_id)
+            if tracker:
+                await tracker.complete(result_data, "所有章节分镜已存在，跳过生成")
+            return result_data
+
+        skipped = len(chapters_input) - len(pending_input)
+        if skipped > 0 and tracker:
+            await tracker.update_progress(10, f"已有 {skipped} 章分镜，将只生成剩余 {len(pending_input)} 章")
 
         try:
             # Step 3: AI call — parallel, no session held
             tasks = []
-            for ch in chapters_input:
+            for ch in pending_input:
                 llm_input = {"chapterTitle": ch["chapterTitle"], "shots": ch["shots"]}
-                tasks.append(self._call_storyboard_llm(llm_input))
+                tasks.append(self._call_storyboard_llm(llm_input, novel_text))
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             # Step 4: Short write — save results (M1: commit once after loop, H3: batch inserts)
             async with async_session_factory() as write_session:
-                total_chapters = len(chapters_input)
+                total_chapters = len(pending_input)
                 failed_chapters = []
                 valid_chapters = []
-                for idx, (ch_data, shots) in enumerate(zip(chapters_input, results)):
+                for idx, (ch_data, shots) in enumerate(zip(pending_input, results)):
                     if isinstance(shots, Exception):
                         logger.error(f"章节 {ch_data['chapterTitle']} 分镜生成失败: {shots}")
                         failed_chapters.append(ch_data["chapterTitle"])
@@ -158,7 +183,12 @@ class StoryboardService:
             async with async_session_factory() as result_session:
                 result_data = await self._build_storyboard_response_session(result_session, novel_id)
             if tracker:
-                await tracker.complete(result_data)
+                msg = "分镜生成完成"
+                if failed_chapters:
+                    msg += f"，失败 {len(failed_chapters)} 章: {', '.join(failed_chapters)}"
+                if skipped > 0:
+                    msg += f"（跳过已存在 {skipped} 章）"
+                await tracker.complete(result_data, msg)
             return result_data
 
         except Exception as e:

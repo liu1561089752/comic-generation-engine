@@ -71,6 +71,7 @@ async def init_db():
                 username="admin",
                 password_hash=hash_password(initial_password),
                 email="admin@example.com",
+                is_admin=True,
             )
             session.add(admin_user)
             try:

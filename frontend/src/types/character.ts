@@ -7,6 +7,19 @@ export interface Character {
   role_type?: string
   image_url?: string
   status: string
+  states?: CharacterState[]
+  created_at: string
+  updated_at: string
+}
+
+export interface CharacterState {
+  id: string
+  character_id: string
+  name: string
+  aliases?: string
+  description?: string
+  sort_order?: string
+  image_url?: string
   created_at: string
   updated_at: string
 }

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
+from app.infra.prompt_loader import clear_prompt_cache
 from app.middleware.auth import get_current_user
 from app.models.prompt_template import (
     PROMPT_MODULE_DEFS,
@@ -178,6 +179,8 @@ async def delete_prompt_template(
         raise HTTPException(status_code=400, detail="系统默认模板不允许删除")
 
     await db.delete(template)
+    # 删除模板后清除提示词缓存
+    clear_prompt_cache()
     return ApiResponse(message="删除成功")
 
 
@@ -204,6 +207,8 @@ async def activate_prompt_template(
         .where(PromptTemplate.id == template_id)
         .values(is_active=True)
     )
+    # 切换生效模板后清除提示词缓存
+    clear_prompt_cache()
     return ApiResponse(message="已设置为生效模板")
 
 
@@ -228,4 +233,6 @@ async def update_prompt_module(
 
     module.content = data.content
     await db.flush()
+    # 更新模块内容后清除提示词缓存
+    clear_prompt_cache()
     return ApiResponse(data=PromptModuleResponse.model_validate(module))

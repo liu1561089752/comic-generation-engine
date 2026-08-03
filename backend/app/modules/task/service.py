@@ -130,33 +130,8 @@ class TaskService:
         return task
 
     # =================================================================
-    # 看板 / 批量操作
+    # 批量操作
     # =================================================================
-
-    async def get_queue_data(self) -> dict:
-        """获取队列看板数据（按状态分组）。
-
-        返回结构::
-
-            {
-                "queued":    {"items": [...], "total": int},
-                "running":   {"items": [...], "total": int},
-                "completed": {"items": [...], "total": int},
-                "failed":    {"items": [...], "total": int},
-                "cancelled": {"items": [...], "total": int},
-            }
-        """
-        statuses = ["queued", "running", "completed", "failed", "cancelled"]
-        result: dict = {}
-        for st in statuses:
-            tasks, total = await self.task_repo.list_filtered(
-                status=st, skip=0, limit=50
-            )
-            result[st] = {
-                "items": [_task_to_dict(t) for t in tasks],
-                "total": total,
-            }
-        return result
 
     async def batch_cancel(self, task_ids: list[UUID]) -> int:
         """批量取消任务，返回成功取消的数量。
@@ -191,23 +166,3 @@ class TaskService:
             ):
                 count += 1
         return count
-
-
-def _task_to_dict(task: Task) -> dict:
-    """将 Task ORM 对象序列化为字典（与路由层 ``_task_to_dict`` 保持一致）。"""
-    return {
-        "id": str(task.id),
-        "project_id": str(task.project_id) if task.project_id else None,
-        "task_type": task.task_type,
-        "status": task.status,
-        "priority": task.priority,
-        "progress": task.progress,
-        "input_data": task.input_data,
-        "output_data": task.output_data,
-        "logs": task.logs or [],
-        "error_message": task.error_message,
-        "started_at": task.started_at.isoformat() if task.started_at else None,
-        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
-        "created_at": task.created_at.isoformat() if task.created_at else None,
-        "updated_at": task.updated_at.isoformat() if task.updated_at else None,
-    }

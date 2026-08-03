@@ -7,15 +7,19 @@ interface WebSocketMessage {
 }
 
 type MessageHandler = (message: WebSocketMessage) => void
+type ConnectionStateHandler = (connected: boolean) => void
 
-export function useWebSocket(url: string, onMessage?: MessageHandler) {
+export function useWebSocket(url: string, onMessage?: MessageHandler, onConnectionStateChange?: ConnectionStateHandler) {
   const wsRef = useRef<WebSocket | null>(null)
   const token = useAuthStore((state) => state.token)
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>()
+  const mountedRef = useRef(true)
   // D60: 用 ref 持有最新的 onMessage，避免它进入 connect 依赖数组
   // 导致每次父组件渲染（onMessage 引用变化）时 WebSocket 重连
   const onMessageRef = useRef(onMessage)
   onMessageRef.current = onMessage
+  const onConnectionStateChangeRef = useRef(onConnectionStateChange)
+  onConnectionStateChangeRef.current = onConnectionStateChange
   // 重连退避计数
   const reconnectAttemptsRef = useRef(0)
 
@@ -28,6 +32,7 @@ export function useWebSocket(url: string, onMessage?: MessageHandler) {
     ws.onopen = () => {
       console.log('WebSocket connected')
       reconnectAttemptsRef.current = 0
+      onConnectionStateChangeRef.current?.(true)
     }
 
     ws.onmessage = (event) => {
@@ -40,6 +45,8 @@ export function useWebSocket(url: string, onMessage?: MessageHandler) {
     }
 
     ws.onclose = () => {
+      if (!mountedRef.current) return
+      onConnectionStateChangeRef.current?.(false)
       // 指数退避重连，避免服务端不可用时疯狂重连
       const attempts = reconnectAttemptsRef.current++
       const delay = Math.min(1000 * Math.pow(2, attempts), 30000)
@@ -50,7 +57,9 @@ export function useWebSocket(url: string, onMessage?: MessageHandler) {
     }
 
     ws.onerror = (error) => {
+      if (!mountedRef.current) return
       console.error('WebSocket error:', error)
+      onConnectionStateChangeRef.current?.(false)
       ws.close()
     }
 
@@ -58,9 +67,11 @@ export function useWebSocket(url: string, onMessage?: MessageHandler) {
   }, [url, token])
 
   useEffect(() => {
+    mountedRef.current = true
     connect()
 
     return () => {
+      mountedRef.current = false
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current)
       }

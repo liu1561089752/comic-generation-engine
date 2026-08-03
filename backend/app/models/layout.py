@@ -63,7 +63,7 @@ class LayoutShot(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     page_id = Column(UUID(as_uuid=True), ForeignKey("layout_pages.id"), nullable=False, index=True)
-    shot_id = Column(String(10), nullable=False)     # 关联 ScriptShot.shot_id / StoryboardShot.shot_id
+    shot_id = Column(String(50), nullable=False)     # 关联 ScriptShot.shot_id / StoryboardShot.shot_id
     sort_order = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 

@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 # 归属校验依赖复用 app.core.database.get_db，保证与路由函数共享同一个 Session
 from app.core.database import async_session_factory, get_db as _shared_get_db
-from app.core.security import decode_token
+from app.core.security import decode_token, _is_token_blacklisted
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
@@ -25,6 +25,40 @@ async def get_db():
             await session.close()
 
 
+async def get_current_user_obj(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(_shared_get_db)):
+    """获取当前登录用户对象（带 is_admin 等全部字段）"""
+    from app.models.user import User
+
+    payload = decode_token(token)
+    if payload is None or payload.get("type") != "access":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效的认证令牌",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    # 检查 Token 是否已被撤销（登出）
+    if _is_token_blacklisted(token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="令牌已被撤销，请重新登录",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    user_id = payload.get("sub")
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="无效的用户ID")
+    user = await db.get(User, UUID(user_id))
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=401, detail="用户不存在或已被禁用")
+    return user
+
+
+async def require_admin(user = Depends(get_current_user_obj)):
+    """管理员权限依赖"""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    return user
+
+
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> str:
     """获取当前登录用户 ID"""
     payload = decode_token(token)
@@ -32,6 +66,13 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> str:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="无效的认证令牌",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    # 检查 Token 是否已被撤销（登出）
+    if _is_token_blacklisted(token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="令牌已被撤销，请重新登录",
             headers={"WWW-Authenticate": "Bearer"},
         )
     user_id = payload.get("sub")

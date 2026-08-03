@@ -4,6 +4,7 @@ from sqlalchemy import select, func, cast, Text as SAText
 from app.core.database import get_db
 from app.core.config import settings
 from app.middleware.auth import get_current_user
+from app.core.dependencies import require_admin
 from app.schemas.common import ApiResponse
 from app.models.system import SystemLog, Plugin
 from pydantic import BaseModel, Field
@@ -364,7 +365,7 @@ async def system_stats(db: AsyncSession = Depends(get_db), user_id: str = Depend
 
 
 @router.get("/config")
-async def system_config(user_id: str = Depends(get_current_user)):
+async def system_config(user_id: str = Depends(get_current_user), admin=Depends(require_admin)):
     """获取系统配置（不含敏感信息）"""
     return ApiResponse(data={
         "app_env": settings.APP_ENV,
@@ -389,7 +390,7 @@ class SystemConfigUpdate(BaseModel):
 
 
 @router.put("/config")
-async def update_system_config(config: SystemConfigUpdate, user_id: str = Depends(get_current_user)):
+async def update_system_config(config: SystemConfigUpdate, user_id: str = Depends(get_current_user), admin=Depends(require_admin)):
     """更新系统配置"""
     # 只写入本次显式提供的字段，避免未传的项被 None 覆盖
     changes = config.model_dump(exclude_unset=True, exclude_none=True)
@@ -479,7 +480,7 @@ async def get_storage_stats(user_id: str = Depends(get_current_user)):
 
 
 @router.post("/storage/clear-cache")
-async def clear_cache(user_id: str = Depends(get_current_user)):
+async def clear_cache(user_id: str = Depends(get_current_user), admin=Depends(require_admin)):
     """清理缓存"""
     import shutil
     import os
@@ -518,7 +519,7 @@ async def clear_cache(user_id: str = Depends(get_current_user)):
 # 注：PostgreSQL 迁移后，文件级备份已失效。备份/恢复改用 pg_dump / pg_restore 外部工具。
 
 @router.post("/backup")
-async def create_backup(user_id: str = Depends(get_current_user)):
+async def create_backup(user_id: str = Depends(get_current_user), admin=Depends(require_admin)):
     """创建数据备份（PostgreSQL 迁移后已禁用，请使用 pg_dump）"""
     raise HTTPException(
         status_code=501,
@@ -527,7 +528,7 @@ async def create_backup(user_id: str = Depends(get_current_user)):
 
 
 @router.get("/backups")
-async def list_backups(user_id: str = Depends(get_current_user)):
+async def list_backups(user_id: str = Depends(get_current_user), admin=Depends(require_admin)):
     """列出所有备份文件（仅 storage/backups 目录下的历史文件）"""
     import os
     import asyncio
@@ -552,7 +553,7 @@ async def list_backups(user_id: str = Depends(get_current_user)):
 
 
 @router.post("/backup/restore")
-async def restore_backup(backup_name: str, user_id: str = Depends(get_current_user)):
+async def restore_backup(backup_name: str, user_id: str = Depends(get_current_user), admin=Depends(require_admin)):
     """恢复备份（PostgreSQL 迁移后已禁用，请使用 pg_restore）"""
     raise HTTPException(
         status_code=501,
@@ -598,7 +599,7 @@ class PluginToggle(BaseModel):
 
 
 @router.put("/plugins/{plugin_id}/toggle")
-async def toggle_plugin(plugin_id: str, body: PluginToggle, db: AsyncSession = Depends(get_db), user_id: str = Depends(get_current_user)):
+async def toggle_plugin(plugin_id: str, body: PluginToggle, db: AsyncSession = Depends(get_db), user_id: str = Depends(get_current_user), admin=Depends(require_admin)):
     """启用/禁用插件"""
     from pydantic import UUID4
     try:

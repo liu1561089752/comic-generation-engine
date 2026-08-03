@@ -7,6 +7,7 @@ import SearchBar from '../SearchBar'
 import { useAuthStore } from '../../stores/authStore'
 import { notificationApi } from '../../api/notificationApi'
 import type { NotificationItem } from '../../api/notificationApi'
+import { formatRelativeTime } from '../../utils/format'
 
 const { Header, Content } = Layout
 const { Text } = Typography
@@ -106,21 +107,6 @@ function getBreadcrumbItems(pathname: string) {
   }
 
   return items
-}
-
-function formatTime(timeStr: string) {
-  const date = new Date(timeStr)
-  const now = new Date()
-  const diff = now.getTime() - date.getTime()
-  const minutes = Math.floor(diff / 60000)
-  const hours = Math.floor(diff / 3600000)
-  const days = Math.floor(diff / 86400000)
-
-  if (minutes < 1) return '刚刚'
-  if (minutes < 60) return `${minutes}分钟前`
-  if (hours < 24) return `${hours}小时前`
-  if (days < 7) return `${days}天前`
-  return date.toLocaleDateString('zh-CN')
 }
 
 export default function AppLayout() {
@@ -327,7 +313,7 @@ export default function AppLayout() {
                             }
                             description={
                               <Text type="secondary" style={{ fontSize: 12 }}>
-                                {formatTime(item.created_at)}
+                                {formatRelativeTime(item.created_at)}
                               </Text>
                             }
                           />

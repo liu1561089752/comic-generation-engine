@@ -387,7 +387,7 @@ class ExportService:
         """在图片底部绘制作品别名水印，返回 RGB 图像（同步，在 _process_images_sync 内调用）."""
         rgba = img.convert("RGBA")
         draw = ImageDraw.Draw(rgba)
-        font = self._get_font(30)
+        font = self._get_font(20)
         text = f"《{alias_name}》{page_label}"
         bbox = draw.textbbox((0, 0), text, font=font)
         tw = bbox[2] - bbox[0]
@@ -508,12 +508,12 @@ class ExportService:
             os.makedirs(export_dir, exist_ok=True)
             ext = "jpg" if fmt == "jpg" else "png"
             file_paths = []
-            for idx, (page_label, img_path, _ch_sort, _pg_sort, file_stem) in enumerate(page_images):
+            for idx, (page_label, img_path, _ch_sort, _pg_sort, _file_stem) in enumerate(page_images):
                 img = PILImage.open(img_path).convert("RGB")
                 if add_alias and alias_name:
                     img = self._draw_alias_watermark(img, alias_name, page_label)
 
-                page_path = os.path.join(export_dir, f"{file_stem}.{ext}")
+                page_path = os.path.join(export_dir, f"{page_label}.{ext}")
                 if fmt == "jpg":
                     img.save(page_path, quality=quality)
                 else:

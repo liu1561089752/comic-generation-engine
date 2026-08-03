@@ -23,7 +23,8 @@ from app.models.layout import LayoutChapter, LayoutPage, LayoutShot, ImagePrompt
 from app.models.storyboard import StoryboardChapter, StoryboardShot
 from app.models.novel import ScriptChapter, ScriptShot
 from app.models.world import SceneAsset, Prop, Building, Outfit
-from app.models.character import Character, CharacterReferenceImage
+from app.models.character import Character, CharacterReferenceImage, CharacterState
+from app.repositories import layout_repo
 from app.repositories.novel_repo import NovelRepository
 from app.infra.prompt_loader import get_prompt
 
@@ -96,6 +97,25 @@ class GenerationService:
             r = await session.execute(select(CharacterReferenceImage).where(CharacterReferenceImage.id.in_(valid_uuids)))
             for cri in r.scalars().all():
                 ref_map[cri.id] = (f"角色参考-{cri.angle or '多角度'}", cri.image_url or None)
+
+            # CharacterState references — resolve state_id -> CharacterReferenceImage
+            state_r = await session.execute(select(CharacterState).where(CharacterState.id.in_(valid_uuids)))
+            all_states = list(state_r.scalars().all())
+            if all_states:
+                state_ids_list = [s.id for s in all_states]
+                cri_for_state_r = await session.execute(
+                    select(CharacterReferenceImage).where(
+                        CharacterReferenceImage.state_id.in_(state_ids_list)
+                    )
+                )
+                state_img_map: dict = {}
+                for cri in cri_for_state_r.scalars().all():
+                    if cri.state_id:
+                        state_img_map[cri.state_id] = cri.image_url
+                for s in all_states:
+                    img_url = state_img_map.get(s.id)
+                    if img_url:
+                        ref_map[s.id] = (f"角色状态-{s.name}", img_url)
 
         descriptions = []
         image_urls = []
@@ -325,7 +345,7 @@ class GenerationService:
             async with semaphore:
                 try:
                     # Load reference images in a short read session
-                    page_ref_ids = ref_ids_map.get(page["page_label"]) or page["reference_ids"]
+                    page_ref_ids = ref_ids_map.get(page["page_label"]) if page["page_label"] in ref_ids_map else page["reference_ids"]
                     desc_text = ""
                     base64_images: list[str] = []
                     if page_ref_ids:
@@ -862,51 +882,7 @@ class GenerationService:
         return None
 
     async def _get_layout_chapters_session(self, session: AsyncSession, novel_id: UUID):
-        result = await session.execute(
-            select(LayoutChapter).where(LayoutChapter.novel_id == novel_id).order_by(LayoutChapter.sort_order)
-        )
-        return list(result.scalars().all())
+        return await layout_repo.get_layout_chapters_session(session, novel_id)
 
     async def _build_layout_response_session(self, session: AsyncSession, novel_id: UUID) -> dict:
-        result = await session.execute(
-            select(LayoutChapter)
-            .options(
-                selectinload(LayoutChapter.pages)
-                .selectinload(LayoutPage.shots),
-                selectinload(LayoutChapter.pages)
-                .selectinload(LayoutPage.image_prompt),
-                selectinload(LayoutChapter.pages)
-                .selectinload(LayoutPage.reference_match),
-                selectinload(LayoutChapter.pages)
-                .selectinload(LayoutPage.generated_images),
-            )
-            .where(LayoutChapter.novel_id == novel_id)
-            .order_by(LayoutChapter.sort_order)
-        )
-        chapters = result.scalars().all()
-        return {"chapters": [
-            {
-                "id": str(ch.id),
-                "title": ch.title,
-                "sort_order": ch.sort_order,
-                "pages": [
-                    {
-                        "id": str(p.id),
-                        "page_id": p.page_label,
-                        "layout_type": p.layout_type,
-                        "page_purpose": p.page_purpose,
-                        "visual_focus": p.visual_focus,
-                        "image_prompt": p.image_prompt.full_prompt if p.image_prompt else "",
-                        "image_url": p.generated_images[0].image_url if p.generated_images else "",
-                        "reference_ids": p.reference_match.ref_ids if p.reference_match else [],
-                        "shots": [
-                            {"shotId": s.shot_id, "sortOrder": s.sort_order}
-                            for s in p.shots
-                        ],
-                        "sort_order": p.sort_order,
-                    }
-                    for p in ch.pages
-                ],
-            }
-            for ch in chapters
-        ]}
+        return await layout_repo.build_layout_response_session(session, novel_id)

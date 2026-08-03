@@ -67,6 +67,9 @@ export const characterApi = {
   generateImage: (projectId: string, characterId: string) =>
     apiClient.post<ApiResponse<{ image_url: string; character_name: string }>>(`/projects/${projectId}/characters/${characterId}/generate-image`),
 
+  generateStateImage: (projectId: string, characterId: string, stateId: string) =>
+    apiClient.post<ApiResponse<{ image_url: string; state_name: string }>>(`/projects/${projectId}/characters/${characterId}/states/${stateId}/generate-image`),
+
   listRelations: (projectId: string, characterId: string) =>
     apiClient.get<ApiResponse<CharacterRelation[]>>(`/projects/${projectId}/characters/${characterId}/relations`),
 

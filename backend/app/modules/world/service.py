@@ -13,6 +13,7 @@ from typing import List, Optional, Tuple
 from uuid import UUID
 
 import httpx
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.base_repository import BaseRepository
@@ -203,7 +204,7 @@ class WorldService:
                     "atmosphere": scene.get("atmosphere"),
                 }
                 existing = old_by_name.get(name)
-                if existing is not None and existing.id not in kept_ids:
+                if existing is not None:
                     asset = await scene_asset_repo.update(existing.id, **fields)
                 else:
                     asset = await scene_asset_repo.create(
@@ -301,7 +302,7 @@ class WorldService:
                     "visual_description": prop.get("visual_description"),
                 }
                 existing = old_by_name.get(name)
-                if existing is not None and existing.id not in kept_ids:
+                if existing is not None:
                     item = await prop_repo.update(existing.id, **fields)
                 else:
                     item = await prop_repo.create(
@@ -400,7 +401,7 @@ class WorldService:
                     "interior_description": building.get("interior_description"),
                 }
                 existing = old_by_name.get(name)
-                if existing is not None and existing.id not in kept_ids:
+                if existing is not None:
                     item = await building_repo.update(existing.id, **fields)
                 else:
                     item = await building_repo.create(
@@ -499,7 +500,7 @@ class WorldService:
                     "color_scheme": outfit.get("color_scheme"),
                 }
                 existing = old_by_name.get(name)
-                if existing is not None and existing.id not in kept_ids:
+                if existing is not None:
                     item = await outfit_repo.update(existing.id, **fields)
                 else:
                     item = await outfit_repo.create(
@@ -567,11 +568,12 @@ class WorldService:
         return await self.template_repo.update(template_id, is_default=True)
 
     async def _clear_default_template(self, project_id: UUID) -> None:
-        """清除项目下所有模板的默认标记"""
-        templates = await self.template_repo.list_all(project_id=project_id)
-        for t in templates:
-            if t.is_default:
-                await self.template_repo.update(t.id, is_default=False)
+        """清除项目下所有模板的默认标记（批量 UPDATE）"""
+        await self.session.execute(
+            sa_update(StyleTemplate)
+            .where(StyleTemplate.project_id == project_id, StyleTemplate.is_default == True)
+            .values(is_default=False)
+        )
 
     # ==================================================================
     # 生图内部辅助（短事务模式）
