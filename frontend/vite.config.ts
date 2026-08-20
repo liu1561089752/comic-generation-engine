@@ -4,6 +4,8 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
+    // 绑定 0.0.0.0，允许局域网/手机访问
+    host: true,
     port: 3000,
     proxy: {
       '/api': {
@@ -15,6 +17,10 @@ export default defineConfig({
       '/storage': {
         target: 'http://localhost:8000',
         changeOrigin: true,
+      },
+      '/ws': {
+        target: 'ws://localhost:8000',
+        ws: true,
       },
     },
   },
