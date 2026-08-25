@@ -49,6 +49,10 @@ export const novelApi = {
   getById: (projectId: string, novelId: string) =>
     apiClient.get<ApiResponse<Novel>>(`/projects/${projectId}/novels/${novelId}`),
 
+  // 删除小说（含全部下游数据）
+  remove: (projectId: string, novelId: string) =>
+    apiClient.delete<ApiResponse<{ deleted: boolean }>>(`/projects/${projectId}/novels/${novelId}`),
+
   // 预处理
   preprocess: (projectId: string, novelId: string) =>
     apiClient.post<ApiResponse<any>>(`/projects/${projectId}/novels/${novelId}/preprocess`),
@@ -304,20 +308,7 @@ export const novelApi = {
       { reference_ids: referenceIds }
     ),
 
-  /** 一键补图：从 GRS AI 积分记录中恢复未生成的图片 */
-  recoverImages: (projectId: string, novelId: string, authorization: string, xtx: string, limit: number) =>
-    apiClient.post<ApiResponse<{ task_id: string }>>(
-      `/projects/${projectId}/novels/${novelId}/recover-images`,
-      { authorization, xtx, limit }
-    ),
-
   /** 获取小说的所有小说列表（用于切换小说） */
   listByProject: (projectId: string) =>
     apiClient.get<ApiResponse<ListResponse<Novel>>>(`/projects/${projectId}/novels`),
-
-  /** 校对指定排版章节的生图提示词 */
-  proofreadChapterPrompts: (projectId: string, novelId: string, layoutChapterId: string) =>
-    apiClient.post<ApiResponse<any>>(
-      `/projects/${projectId}/novels/${novelId}/layout-chapters/${layoutChapterId}/proofread-prompts`
-    ),
 }

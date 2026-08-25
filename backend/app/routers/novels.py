@@ -1,3 +1,4 @@
+from app.core.task_types import TASK_GENERATE_IMAGE_PROMPTS, TASK_GENERATE_LAYOUT, TASK_GENERATE_PAGE_IMAGES, TASK_GENERATE_SCRIPT, TASK_GENERATE_SINGLE_IMAGE, TASK_GENERATE_STORYBOARD, TASK_MATCH_REFERENCES, TASK_PREPROCESS_NOVEL, TASK_REGENERATE_PAGE_PROMPT
 import os
 import asyncio
 import logging
@@ -25,7 +26,6 @@ class GeneratePageImagesRequest(BaseModel):
 from app.middleware.auth import get_current_user
 from app.core.dependencies import require_project_novel
 from app.modules.novel.facade import NovelService
-from app.modules.image_recovery.service import ImageRecoveryService
 from app.schemas.common import ApiResponse
 from app.schemas.novel_schema import (
     ChapterUpdate,
@@ -91,57 +91,6 @@ async def upload_novel(
         return ApiResponse(data=result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-
-
-class RecoverImagesRequest(BaseModel):
-    authorization: str
-    xtx: str
-    limit: int = 100
-
-
-async def _run_recover_images(project_id, novel_id, authorization, xtx, limit, tracker):
-    async with async_session_factory() as session:
-        try:
-            service = ImageRecoveryService(session)
-            await tracker.rebind_session(session)
-            await tracker.set_running()
-            result = await service.recover_images(project_id, novel_id, authorization, xtx, limit, tracker=tracker)
-            await tracker.complete(result, broadcast=False)
-            await session.commit()
-            await tracker._broadcast()
-        except Exception as e:
-            logger.exception(f"补图任务失败: {e}")
-            await session.rollback()
-            try:
-                await tracker.fail(str(e))
-                await session.commit()
-            except:
-                await session.rollback()
-
-
-@router.post("/{project_id}/novels/{novel_id}/recover-images")
-async def recover_images(
-    project_id: UUID,
-    novel_id: UUID,
-    body: RecoverImagesRequest,
-    user_id: str = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-    _n = Depends(require_project_novel),
-):
-    """从 GRS AI 积分记录中恢复未生成图片的漫画页"""
-    existing = await find_running_task(db, project_id, "recover_images", str(novel_id))
-    if existing:
-        return ApiResponse(data={"task_id": str(existing.id), "message": "已有正在执行的补图任务"})
-    # authorization / xtx 属于临时凭证，不写入 input_data（避免明文落库）
-    tracker = await TaskProgressTracker.create(
-        db, project_id, "recover_images",
-        "补图", {"novel_id": str(novel_id), "limit": body.limit}
-    )
-    spawn_background_task(
-        tracker.task.id,
-        _run_recover_images(project_id, novel_id, body.authorization, body.xtx, body.limit, tracker),
-    )
-    return ApiResponse(data={"task_id": str(tracker.task.id)})
 
 
 @router.delete("/{project_id}/novels/{novel_id}/layout-pages")
@@ -436,44 +385,44 @@ async def _run_preprocess_novel(project_id, novel_id, tracker):
 from app.infra.task_dispatcher import register_task_runner as _register
 
 
-@_register("generate_script")
+@_register(TASK_GENERATE_SCRIPT)
 async def _redispatch_generate_script(task, tracker):
     novel_id = UUID(task.input_data["novel_id"])
     await _run_generate_script(task.project_id, novel_id, tracker)
 
 
-@_register("generate_storyboard")
+@_register(TASK_GENERATE_STORYBOARD)
 async def _redispatch_generate_storyboard(task, tracker):
     novel_id = UUID(task.input_data["novel_id"])
     await _run_generate_storyboard(task.project_id, novel_id, tracker)
 
 
-@_register("generate_layout")
+@_register(TASK_GENERATE_LAYOUT)
 async def _redispatch_generate_layout(task, tracker):
     novel_id = UUID(task.input_data["novel_id"])
     await _run_generate_layout(task.project_id, novel_id, tracker)
 
 
-@_register("generate_image_prompts")
+@_register(TASK_GENERATE_IMAGE_PROMPTS)
 async def _redispatch_generate_image_prompts(task, tracker):
     novel_id = UUID(task.input_data["novel_id"])
     await _run_generate_image_prompts(task.project_id, novel_id, tracker)
 
 
-@_register("regenerate_page_prompt")
+@_register(TASK_REGENERATE_PAGE_PROMPT)
 async def _redispatch_regenerate_page_prompt(task, tracker):
     novel_id = UUID(task.input_data["novel_id"])
     page_id = task.input_data.get("page_id", "")
     await _run_regenerate_page_prompt(task.project_id, novel_id, page_id, tracker)
 
 
-@_register("match_references")
+@_register(TASK_MATCH_REFERENCES)
 async def _redispatch_match_references(task, tracker):
     novel_id = UUID(task.input_data["novel_id"])
     await _run_match_references(task.project_id, novel_id, tracker)
 
 
-@_register("generate_single_image")
+@_register(TASK_GENERATE_SINGLE_IMAGE)
 async def _redispatch_generate_single_image(task, tracker):
     novel_id = UUID(task.input_data["novel_id"])
     page_id = task.input_data.get("page_id", "")
@@ -481,30 +430,17 @@ async def _redispatch_generate_single_image(task, tracker):
     await _run_generate_single_image(task.project_id, novel_id, page_id, reference_ids, tracker)
 
 
-@_register("generate_page_images")
+@_register(TASK_GENERATE_PAGE_IMAGES)
 async def _redispatch_generate_page_images(task, tracker):
     novel_id = UUID(task.input_data["novel_id"])
     reference_ids = task.input_data.get("reference_ids")
     await _run_generate_page_images(task.project_id, novel_id, reference_ids, tracker)
 
 
-@_register("preprocess_novel")
+@_register(TASK_PREPROCESS_NOVEL)
 async def _redispatch_preprocess_novel(task, tracker):
     novel_id = UUID(task.input_data["novel_id"])
     await _run_preprocess_novel(task.project_id, novel_id, tracker)
-
-
-@_register("recover_images")
-async def _redispatch_recover_images(task, tracker):
-    novel_id = UUID(task.input_data["novel_id"])
-    authorization = task.input_data.get("authorization") or ""
-    xtx = task.input_data.get("xtx") or ""
-    limit = task.input_data.get("limit", 100)
-    # 凭证不落库，重试时拿不到；用空凭证调外部接口只会得到 401，直接失败并说明原因
-    if not authorization or not xtx:
-        await tracker.fail("补图凭证已失效，请重新发起补图任务", exc_info=False)
-        return
-    await _run_recover_images(task.project_id, novel_id, authorization, xtx, limit, tracker)
 
 
 # ===================================================================
@@ -520,11 +456,11 @@ async def generate_storyboard(
     _n = Depends(require_project_novel),
 ):
     """调用LLM生成所有章节的分镜"""
-    existing = await find_running_task(db, project_id, "generate_storyboard", str(novel_id))
+    existing = await find_running_task(db, project_id, TASK_GENERATE_STORYBOARD, str(novel_id))
     if existing:
         return ApiResponse(data={"task_id": str(existing.id), "message": "已有正在执行的生成分镜任务"})
     tracker = await TaskProgressTracker.create(
-        db, project_id, "generate_storyboard",
+        db, project_id, TASK_GENERATE_STORYBOARD,
         "生成分镜", {"novel_id": str(novel_id)}
     )
     spawn_background_task(tracker.task.id, _run_generate_storyboard(project_id, novel_id, tracker))
@@ -594,11 +530,11 @@ async def generate_layout(
     _n = Depends(require_project_novel),
 ):
     """调用LLM生成所有章节的排版"""
-    existing = await find_running_task(db, project_id, "generate_layout", str(novel_id))
+    existing = await find_running_task(db, project_id, TASK_GENERATE_LAYOUT, str(novel_id))
     if existing:
         return ApiResponse(data={"task_id": str(existing.id), "message": "已有正在执行的生成排版任务"})
     tracker = await TaskProgressTracker.create(
-        db, project_id, "generate_layout",
+        db, project_id, TASK_GENERATE_LAYOUT,
         "生成排版", {"novel_id": str(novel_id)}
     )
     spawn_background_task(tracker.task.id, _run_generate_layout(project_id, novel_id, tracker))
@@ -684,11 +620,11 @@ async def generate_image_prompts(
     _n = Depends(require_project_novel),
 ):
     """调用LLM为所有排版页面生成生图提示词"""
-    existing = await find_running_task(db, project_id, "generate_image_prompts", str(novel_id))
+    existing = await find_running_task(db, project_id, TASK_GENERATE_IMAGE_PROMPTS, str(novel_id))
     if existing:
         return ApiResponse(data={"task_id": str(existing.id), "message": "已有正在执行的生成提示词任务"})
     tracker = await TaskProgressTracker.create(
-        db, project_id, "generate_image_prompts",
+        db, project_id, TASK_GENERATE_IMAGE_PROMPTS,
         "生成生图提示词", {"novel_id": str(novel_id)}
     )
     spawn_background_task(tracker.task.id, _run_generate_image_prompts(project_id, novel_id, tracker))
@@ -706,7 +642,7 @@ async def regenerate_page_prompt(
 ):
     """重新生成指定页面的生图提示词"""
     tracker = await TaskProgressTracker.create(
-        db, project_id, "regenerate_page_prompt",
+        db, project_id, TASK_REGENERATE_PAGE_PROMPT,
         "重新生成页面提示词", {"novel_id": str(novel_id), "page_id": body.page_id}
     )
     spawn_background_task(tracker.task.id, _run_regenerate_page_prompt(project_id, novel_id, body.page_id, tracker))
@@ -722,11 +658,11 @@ async def match_references(
     _n = Depends(require_project_novel),
 ):
     """根据每页的 image_prompt 智能匹配项目中的参考图"""
-    existing = await find_running_task(db, project_id, "match_references", str(novel_id))
+    existing = await find_running_task(db, project_id, TASK_MATCH_REFERENCES, str(novel_id))
     if existing:
         return ApiResponse(data={"task_id": str(existing.id), "message": "已有正在执行的匹配参考图任务"})
     tracker = await TaskProgressTracker.create(
-        db, project_id, "match_references",
+        db, project_id, TASK_MATCH_REFERENCES,
         "匹配参考图", {"novel_id": str(novel_id)}
     )
     spawn_background_task(tracker.task.id, _run_match_references(project_id, novel_id, tracker))
@@ -744,7 +680,7 @@ async def generate_single_image(
 ):
     """为指定页面生成图片"""
     tracker = await TaskProgressTracker.create(
-        db, project_id, "generate_single_image",
+        db, project_id, TASK_GENERATE_SINGLE_IMAGE,
         "生成单页图片", {"novel_id": str(novel_id), "page_id": body.page_id}
     )
     spawn_background_task(tracker.task.id, _run_generate_single_image(project_id, novel_id, body.page_id, body.reference_ids, tracker))
@@ -761,11 +697,11 @@ async def generate_page_images(
     _n = Depends(require_project_novel),
 ):
     """为已有提示词的页面生成图片"""
-    existing = await find_running_task(db, project_id, "generate_page_images", str(novel_id))
+    existing = await find_running_task(db, project_id, TASK_GENERATE_PAGE_IMAGES, str(novel_id))
     if existing:
         return ApiResponse(data={"task_id": str(existing.id), "message": "已有正在执行的生成页面图片任务"})
     tracker = await TaskProgressTracker.create(
-        db, project_id, "generate_page_images",
+        db, project_id, TASK_GENERATE_PAGE_IMAGES,
         "生成页面图片", {"novel_id": str(novel_id)}
     )
     spawn_background_task(tracker.task.id, _run_generate_page_images(project_id, novel_id, body.reference_ids, tracker))
@@ -828,11 +764,11 @@ async def preprocess_novel(
     _n = Depends(require_project_novel),
 ):
     """预处理小说文本"""
-    existing = await find_running_task(db, project_id, "preprocess_novel", str(novel_id))
+    existing = await find_running_task(db, project_id, TASK_PREPROCESS_NOVEL, str(novel_id))
     if existing:
         return ApiResponse(data={"task_id": str(existing.id), "message": "已有正在执行的预处理任务"})
     tracker = await TaskProgressTracker.create(
-        db, project_id, "preprocess_novel",
+        db, project_id, TASK_PREPROCESS_NOVEL,
         "预处理小说", {"novel_id": str(novel_id)}
     )
     spawn_background_task(tracker.task.id, _run_preprocess_novel(project_id, novel_id, tracker))
@@ -870,6 +806,23 @@ async def list_chapters(
     try:
         chapters = await service.list_chapters(novel_id)
         return ApiResponse(data=chapters)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.delete("/{project_id}/novels/{novel_id}")
+async def delete_novel(
+    project_id: UUID,
+    novel_id: UUID,
+    user_id: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    _n = Depends(require_project_novel),
+):
+    """删除小说及全部下游数据（章节/脚本/分镜/排版/生成图片），项目回到未导入状态"""
+    service = NovelService(db)
+    try:
+        result = await service.delete_novel(project_id, novel_id)
+        return ApiResponse(data=result)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -1044,7 +997,7 @@ async def generate_script(
 ):
     """调用LLM生成脚本（章节+镜头）"""
     tracker = await TaskProgressTracker.create(
-        db, project_id, "generate_script",
+        db, project_id, TASK_GENERATE_SCRIPT,
         "生成脚本", {"novel_id": str(novel_id)}
     )
     spawn_background_task(tracker.task.id, _run_generate_script(project_id, novel_id, tracker))

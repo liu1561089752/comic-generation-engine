@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { Table, Button, Tag, Card, message, Space } from 'antd'
+import { Table, Button, Tag, Card, message, Space, Modal } from 'antd'
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useNovelStore } from '../../stores/novelStore'
+import { novelApi } from '../../api/novelApi'
 import { formatDate, formatWordCount } from '../../utils/format'
 import NovelUploadModal from '../../components/NovelUploadModal'
 import ProjectFilter from '../../components/common/ProjectFilter'
@@ -52,12 +53,16 @@ export default function NovelList() {
       message.error('请先选择项目')
       return
     }
+    if (novels.length > 0) {
+      message.warning('每个项目仅允许上传一本小说')
+      return
+    }
     try {
       await uploadNovel(selectedProjectId, file, title)
       message.success('小说上传成功')
       setModalOpen(false)
       fetchNovels(selectedProjectId)
-    } catch (e) {
+    } catch {
       message.error('上传失败')
     }
   }
@@ -105,7 +110,37 @@ export default function NovelList() {
       width: 180,
       render: (date: string) => formatDate(date),
     },
+    {
+      title: '操作',
+      key: 'action',
+      width: 80,
+      render: (_: any, record: Novel) => (
+        <Button type="link" danger size="small" onClick={() => handleDelete(record)}>
+          删除
+        </Button>
+      ),
+    },
   ]
+
+  const handleDelete = (record: Novel) => {
+    if (!selectedProjectId) return
+    Modal.confirm({
+      title: `确认删除「${record.title}」？`,
+      content: '将删除该小说及其全部下游数据（章节/脚本/分镜/排版/生成的图片），且每项目仅允许一本小说，删除后需重新上传。此操作不可撤销。',
+      okText: '确认删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await novelApi.remove(selectedProjectId, record.id)
+          message.success('小说已删除')
+          fetchNovels(selectedProjectId)
+        } catch {
+          message.error('删除失败')
+        }
+      },
+    })
+  }
 
   return (
     <div>
@@ -119,13 +154,15 @@ export default function NovelList() {
             >
               刷新
             </Button>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={() => setModalOpen(true)}
-            >
-              导入小说
-            </Button>
+            {novels.length === 0 && (
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                onClick={() => setModalOpen(true)}
+              >
+                导入小说
+              </Button>
+            )}
           </Space>
         )}
       </div>
@@ -136,7 +173,7 @@ export default function NovelList() {
           onProjectChange={handleProjectChange}
           showSearch={false}
           extra={
-            isGlobalMode && selectedProjectId ? (
+            isGlobalMode && selectedProjectId && novels.length === 0 ? (
               <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>
                 导入小说
               </Button>

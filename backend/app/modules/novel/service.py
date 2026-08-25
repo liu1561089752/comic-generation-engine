@@ -5,6 +5,7 @@ AI-dependent preprocess_novel implements T3 D42 (short transaction pattern).
 """
 import asyncio
 import logging
+import os
 import re
 from typing import Optional, List
 from uuid import UUID
@@ -50,7 +51,15 @@ class NovelService:
         filename: str,
         title: str = None,
     ) -> dict:
-        """上传小说文件并解析保存. 支持 txt / docx / md 三种格式."""
+        """上传小说文件并解析保存. 支持 txt / docx / md 三种格式.
+
+        约束：一个项目只允许上传一本小说；项目已存在小说时拒绝再次上传。
+        """
+        # 校验：一个项目只允许一本小说
+        existing = await self.novel_repo.list(project_id=project_id, skip=0, limit=1)
+        if existing[0]:
+            raise ValueError("该项目已上传过小说，每个项目仅允许上传一本小说")
+
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "txt"
         if ext not in ("txt", "docx", "md"):
             raise ValueError(f"不支持的文件格式: .{ext}，仅支持 txt / docx / md")
@@ -99,6 +108,40 @@ class NovelService:
             "format": ext,
             "chapter_count": 1,
         }
+
+    async def delete_novel(self, project_id: UUID, novel_id: UUID) -> dict:
+        """删除小说及其全部下游数据（章节/段落/版本/脚本/分镜/排版/生成图片文件）。
+
+        每项目仅允许一本小说，删除后项目回到"未导入"状态，可重新上传。
+        图片文件删除不可回滚，放在数据库事务提交成功之后执行。
+        """
+        storage_dir = os.path.join(
+            settings.STORAGE_LOCAL_PATH,
+            str(project_id),
+            "generation",
+            str(novel_id),
+        )
+
+        async with async_session_factory() as write_session:
+            repo = NovelRepository(write_session)
+            novel = await repo.get(novel_id)
+            if novel is None or str(novel.project_id) != str(project_id):
+                raise ValueError("小说不存在")
+            # ORM 级联删除：chapters/paragraphs/versions、script、storyboard、layout 及下游
+            await write_session.delete(novel)
+            await write_session.commit()
+            logger.info(f"小说已删除: {novel_id} (project={project_id})")
+
+        # 事务提交成功后再删图片目录（失败只记 warning，不阻塞删除结果）
+        try:
+            if os.path.exists(storage_dir):
+                import shutil
+                shutil.rmtree(storage_dir, ignore_errors=True)
+                logger.info(f"已删除小说图片目录: {storage_dir}")
+        except Exception as e:
+            logger.warning(f"删除小说图片目录失败，残留文件待人工清理: {storage_dir}, error: {e}")
+
+        return {"deleted": True, "novel_id": str(novel_id)}
 
     async def _read_novel_text(self, novel_id: UUID) -> str:
         """短事务读取小说文本，返回截断后的文本。"""
