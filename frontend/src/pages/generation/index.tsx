@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import {
   Button,
   Space,
@@ -14,6 +14,7 @@ import {
   Select,
   Modal,
   Alert,
+  Card,
 } from 'antd'
 import {
   SaveOutlined,
@@ -25,8 +26,6 @@ import {
   ThunderboltOutlined,
   ExperimentOutlined,
   DeleteOutlined,
-  CloudDownloadOutlined,
-  CheckCircleOutlined,
 } from '@ant-design/icons'
 import { usePipelineStore } from '../../stores/pipelineStore'
 import { novelApi } from '../../api/novelApi'
@@ -34,7 +33,10 @@ import { useAutoSave, useBeforeUnload } from '../../hooks/useAutoSave'
 import { useTaskProgress } from '../../hooks/useTaskProgress'
 import { characterApi } from '../../api/characterApi'
 import { worldApi, sceneAssetApi, propApi, buildingApi, outfitApi } from '../../api/worldApi'
-import type { LayoutChapter, LayoutPage, Novel } from '../../types/novel'
+import ProjectFilter from '../../components/common/ProjectFilter'
+import EmptyState from '../../components/common/EmptyState'
+import LazyImage from '../../components/common/LazyImage'
+import type { LayoutPage, Novel } from '../../types/novel'
 import type { Character, CharacterState } from '../../types/character'
 import type { SceneAsset, Prop, Building, Outfit } from '../../types/world'
 
@@ -66,17 +68,15 @@ function getRefId(item: ReferenceItem): string {
 
 export default function GenerationCenter() {
   const { id: projectId } = useParams<{ id: string }>()
+  const navigate = useNavigate()
 
   const {
     layoutData,
     layoutLoading,
     fetchLayout,
     generateImagePrompts,
-    generatePageImages,
-    generationTask,
     saveLayout,
     updateGenerationTask,
-    deleteAllLayoutPages,
     batchDeletePagesContent,
   } = usePipelineStore()
 
@@ -363,24 +363,6 @@ export default function GenerationCenter() {
     // D52: 移除 30 秒兜底 setTimeout
   }
 
-  // 一键补图
-  const handleRecoverImages = async () => {
-    if (!projectId || !selectedNovelId) { message.warning('请先选择小说'); return }
-    if (!recoverAuth.trim()) { message.warning('请填写 Authorization'); return }
-    if (!recoverXtx.trim()) { message.warning('请填写 xtx'); return }
-    if (recoverLimit < 1) { message.warning('查询条数必须大于 0'); return }
-    setRecoverModalOpen(false)
-    setRecoverLoading(true)
-    try {
-      const res: any = await novelApi.recoverImages(projectId, selectedNovelId, recoverAuth.trim(), recoverXtx.trim(), recoverLimit)
-      const taskId = res?.data?.task_id
-      if (taskId) taskProgress.startPolling(taskId)
-    } catch {
-      message.error('补图任务启动失败')
-      setRecoverLoading(false)
-    }
-  }
-
   // AI 匹配参考图
   const handleMatchReferences = async () => {
     if (!projectId || !selectedNovelId) return
@@ -397,25 +379,6 @@ export default function GenerationCenter() {
     } catch {
       message.error('参考图匹配失败')
       setMatchLoading(false)
-    }
-  }
-
-  // 校对当前展开的章节的生图提示词
-  const handleProofreadChapter = async (chIdx: number) => {
-    if (!projectId || !selectedNovelId) { message.warning('请先选择小说'); return }
-    const chapter = layoutData[chIdx]
-    if (!chapter) { message.warning('请选择章节'); return }
-    setProofreadLoading(true)
-    try {
-      const res: any = await novelApi.proofreadChapterPrompts(projectId, selectedNovelId, chapter.id)
-      const data = res?.data?.data || res?.data
-      setProofreadResult(data)
-      setProofreadModalOpen(true)
-    } catch (e: any) {
-      const errMsg = e?.response?.data?.detail || e?.message || '校对失败'
-      message.error(errMsg)
-    } finally {
-      setProofreadLoading(false)
     }
   }
 
@@ -454,17 +417,6 @@ export default function GenerationCenter() {
   const [singleGenLoading, setSingleGenLoading] = useState(false)
   const [promptGenLoading, setPromptGenLoading] = useState(false)
   const [batchImageLoading, setBatchImageLoading] = useState(false)
-  const [recoverLoading, setRecoverLoading] = useState(false)
-
-  // 校对生图提示词状态
-  const [proofreadLoading, setProofreadLoading] = useState(false)
-  const [proofreadModalOpen, setProofreadModalOpen] = useState(false)
-  const [proofreadResult, setProofreadResult] = useState<any>(null)
-
-  const [recoverModalOpen, setRecoverModalOpen] = useState(false)
-  const [recoverAuth, setRecoverAuth] = useState('')
-  const [recoverXtx, setRecoverXtx] = useState('')
-  const [recoverLimit, setRecoverLimit] = useState(20)
 
   const taskProgress = useTaskProgress({
     projectId,
@@ -473,7 +425,6 @@ export default function GenerationCenter() {
       setPromptGenLoading(false)
       setBatchImageLoading(false)
       setMatchLoading(false)
-      setRecoverLoading(false)
       // D53: 递增版本号强制浏览器刷新图片缓存
       setImageGenVersion(v => v + 1)
       if (projectId && selectedNovelId) {
@@ -486,7 +437,6 @@ export default function GenerationCenter() {
       setPromptGenLoading(false)
       setBatchImageLoading(false)
       setMatchLoading(false)
-      setRecoverLoading(false)
       console.error('任务失败:', error)
       updateGenerationTask('', 'failed')
     },
@@ -502,6 +452,29 @@ export default function GenerationCenter() {
   const handlePromptChange = (pageId: string, value: string) => {
     setEditablePrompts(prev => ({ ...prev, [pageId]: value }))
     markDirty()
+  }
+
+  // ===== 全局模式（无项目ID）：选择项目后跳转到对应项目的生图中心 =====
+  if (!projectId) {
+    return (
+      <div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>生图中心</h2>
+        </div>
+        <Card style={{ marginBottom: 16 }}>
+          <ProjectFilter
+            projectId={undefined}
+            onProjectChange={(newProjectId) => {
+              if (newProjectId) {
+                navigate(`/projects/${newProjectId}/generation`, { replace: true })
+              }
+            }}
+            showSearch={false}
+          />
+        </Card>
+        <EmptyState description="请先选择一个项目，进入该项目的生图中心" />
+      </div>
+    )
   }
 
   // ===== Render =====
@@ -588,96 +561,12 @@ export default function GenerationCenter() {
           <Button icon={<ExperimentOutlined />} onClick={handleMatchReferences} loading={matchLoading} disabled={!selectedNovelId || layoutData.length === 0}>一键匹配参考图</Button>
           <Button type="primary" icon={<FileTextOutlined />} onClick={handleGeneratePrompts} loading={promptGenLoading} disabled={!selectedNovelId || layoutData.length === 0}>一键生成提示词</Button>
           <Button type="primary" icon={<PictureOutlined />} onClick={handleGenerateImages} loading={batchImageLoading} disabled={!selectedNovelId || layoutData.length === 0} style={{ background: '#52c41a', borderColor: '#52c41a' }}>一键生成图片</Button>
-          <Button icon={<CloudDownloadOutlined />} onClick={() => setRecoverModalOpen(true)} loading={recoverLoading} disabled={!selectedNovelId || layoutData.length === 0}>一键补图</Button>
         </Space>
       </div>
 
       {taskProgress.isFailed && taskProgress.errorMessage && (
         <Alert message={taskProgress.errorMessage} type="error" showIcon closable style={{ marginBottom: 8 }} />
       )}
-
-      {/* === 一键补图 Modal === */}
-      <Modal
-        title="一键补图"
-        open={recoverModalOpen}
-        onOk={handleRecoverImages}
-        onCancel={() => setRecoverModalOpen(false)}
-        okText="开始补图"
-        cancelText="取消"
-        destroyOnClose
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div>
-            <div style={{ marginBottom: 4, fontWeight: 500 }}>Authorization</div>
-            <Input.TextArea
-              rows={3}
-              value={recoverAuth}
-              onChange={e => setRecoverAuth(e.target.value)}
-              placeholder="请填写 GRS AI 的 Authorization token"
-            />
-          </div>
-          <div>
-            <div style={{ marginBottom: 4, fontWeight: 500 }}>xtx</div>
-            <Input
-              value={recoverXtx}
-              onChange={e => setRecoverXtx(e.target.value)}
-              placeholder="请填写 xtx 值"
-            />
-          </div>
-          <div>
-            <div style={{ marginBottom: 4, fontWeight: 500 }}>查询记录条数</div>
-            <Input
-              type="number"
-              min={1}
-              value={recoverLimit}
-              onChange={e => setRecoverLimit(Math.max(1, parseInt(e.target.value) || 1))}
-            />
-            <div style={{ fontSize: 12, color: '#888', marginTop: 2 }}>选择要查询的积分记录数量，结果将匹配前 100 页中缺少图片的页面</div>
-          </div>
-        </div>
-      </Modal>
-
-      {/* === 校对生图提示词结果 Modal === */}
-      <Modal
-        title={`校对结果 - ${proofreadResult?.chapter_title || ''}`}
-        open={proofreadModalOpen}
-        onCancel={() => setProofreadModalOpen(false)}
-        footer={
-          <Button onClick={() => setProofreadModalOpen(false)} type="primary">
-            关闭
-          </Button>
-        }
-        width={800}
-        destroyOnClose
-      >
-        {proofreadResult && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <Alert
-              message={`角色映射表共 ${proofreadResult.alias_mapping_count} 条`}
-              type="info"
-              showIcon
-              style={{ fontSize: 12 }}
-            />
-            {proofreadResult.novel_content_preview && (
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>小说原文（预览）</div>
-                <div style={{ fontSize: 12, color: '#666', background: '#f5f5f5', padding: '6px 10px', borderRadius: 4, maxHeight: 120, overflow: 'auto', whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>
-                  {proofreadResult.novel_content_preview}
-                </div>
-              </div>
-            )}
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>AI 校对结果</div>
-              <Input.TextArea
-                value={proofreadResult.proofread_content}
-                readOnly
-                rows={16}
-                style={{ fontSize: 12, fontFamily: 'monospace', lineHeight: 1.6 }}
-              />
-            </div>
-          </div>
-        )}
-      </Modal>
 
       {/* === Body === */}
       <div style={{ flex: 1, display: 'flex', gap: 10, overflow: 'hidden' }}>
@@ -694,23 +583,10 @@ export default function GenerationCenter() {
                 </div>
                 {expandedChapters.has(chIdx) && (
                   <div style={{ paddingLeft: 12 }}>
-                    <div style={{ padding: '2px 0 4px 0' }}>
-                      <Button
-                        size="small"
-                        icon={<CheckCircleOutlined />}
-                        onClick={(e) => { e.stopPropagation(); handleProofreadChapter(chIdx) }}
-                        loading={proofreadLoading}
-                        disabled={ch.pages.length === 0}
-                        style={{ fontSize: 10, height: 20, padding: '0 4px', width: '100%' }}
-                      >
-                        校对提示词
-                      </Button>
-                    </div>
                     {ch.pages.map((pg, pgIdx) => (
                       <div key={pg.id || pgIdx} onClick={() => selectPage(chIdx, pgIdx)}
                         style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px', cursor: 'pointer', borderRadius: 4, background: selectedChapterIdx === chIdx && selectedPageIdx === pgIdx ? '#1677ff' : 'transparent', color: selectedChapterIdx === chIdx && selectedPageIdx === pgIdx ? '#fff' : 'inherit', marginBottom: 1 }}>
-                        <Image src={getImageSrc(pg.image_url)} preview={false} style={{ width: 36, height: 24, objectFit: 'cover', borderRadius: 2, background: '#f0f0f0' }}
-                          fallback="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMzYiIGhlaWdodD0iMjQiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PHJlY3Qgd2lkdGg9IjM2IiBoZWlnaHQ9IjI0IiBmaWxsPSIjZjBmMGYwIi8+PHRleHQgeD0iMTgiIHk9IjEyIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBmb250LXNpemU9IjkiIGZpbGw9IiM5OTkiPk5BPC90ZXh0Pjwvc3ZnPg==" />
+                        <LazyImage src={getImageSrc(pg.image_url)} alt={pg.page_id} style={{ width: 36, height: 24, objectFit: 'cover', borderRadius: 2, background: '#f0f0f0' }} />
                         <span style={{ fontSize: 11 }}>{pg.page_id}</span>
                       </div>
                     ))}
@@ -773,8 +649,7 @@ export default function GenerationCenter() {
                         const itemId = getRefId(item)
                         return (
                           <div key={itemId} style={{ flexShrink: 0, width: 160, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-                            <Image src={getReferenceImageUrl(item)} preview={false} style={{ width: '100%', height: 190, objectFit: 'cover', borderRadius: 4, border: selectedRefIds.has(itemId) ? '2px solid #1677ff' : '2px solid transparent', background: '#f0f0f0', cursor: 'pointer' }}
-                              fallback="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTYwIiBoZWlnaHQ9IjE5MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTYwIiBoZWlnaHQ9IjE5MCIgZmlsbD0iI2YwZjBmMCIvPjx0ZXh0IHg9IjgwIiB5PSI5NSIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZm9udC1zaXplPSIxNCIgZmlsbD0iIzk5OSI+TkE8L3RleHQ+PC9zdmc+" />
+                            <LazyImage src={getReferenceImageUrl(item)} alt={getReferenceLabel(item)} style={{ width: '100%', height: 190, objectFit: 'cover', borderRadius: 4, border: selectedRefIds.has(itemId) ? '2px solid #1677ff' : '2px solid transparent', background: '#f0f0f0', cursor: 'pointer' }} />
                             <Checkbox checked={selectedRefIds.has(itemId)} onChange={() => toggleRefSelection(itemId)} style={{ fontSize: 10 }}>
                               <span style={{ fontSize: 10, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'inline-block' }}>{getReferenceLabel(item)}</span>
                             </Checkbox>

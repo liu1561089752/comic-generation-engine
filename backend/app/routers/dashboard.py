@@ -1,17 +1,27 @@
+import time
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, desc, or_, and_
+from sqlalchemy import select, func, desc, or_, and_, union_all
 from datetime import datetime, timezone
 
 from app.core.database import get_db
 from app.middleware.auth import get_current_user
-from app.models.novel import Project, Novel, Chapter
+from app.models.novel import Project, Novel, Chapter, ScriptChapter
 from app.models.task import Task
-from app.models.world import WorldBuilding
-from app.models.character import Character
+from app.models.world import WorldBuilding, SceneAsset, Prop, Building, Outfit
+from app.models.character import Character, CharacterReferenceImage
+from app.models.storyboard import StoryboardChapter
+from app.models.layout import LayoutChapter, LayoutPage, GeneratedImage
 from app.schemas.common import ApiResponse
 
 router = APIRouter()
+
+# O14: Dashboard 阶段进度结果缓存（进程内存，TTL 30 秒）。
+# 打开 Dashboard 时最多 5 个项目的 8 工序进度会被反复计算（每项目 ~12 条 SQL），
+# 缓存后 30 秒内再次请求直接复用结果，避免重复全量查询。
+_stages_cache: dict[str, tuple[list, float]] = {}
+_STAGES_CACHE_TTL = 30.0
 
 
 @router.get("/stats")
@@ -71,11 +81,10 @@ async def get_dashboard_stats(
     projects = result.scalars().all()
 
     # C15: 缓存每个项目的 stages 字典，避免 target_project 重复查询 10+ 次
-    stages_cache: dict = {}
+    # O14: 升级为进程内 30s TTL 缓存，跨请求复用
     recent_projects = []
     for p in projects:
-        stages = await _get_production_stages(db, p.id)
-        stages_cache[p.id] = stages
+        stages = await _get_stages_cached(db, p.id)
         progress = sum(s["weight"] for s in stages if s["completed"])
         recent_projects.append({
             "id": str(p.id),
@@ -88,18 +97,13 @@ async def get_dashboard_stats(
         })
 
     # ===================== production_progress =====================
-    # 取最近项目中状态为非 completed 的第一个项目
-    target_project = None
-    for p in projects:
-        if p.status != "completed":
-            target_project = p
-            break
-    if target_project is None and projects:
-        target_project = projects[0]
+    # 生产进度概览统计最新一个项目（最近更新的项目）的进度
+    # projects 已按 updated_at 降序排列，取第一个即为最新项目
+    target_project = projects[0] if projects else None
 
     prod_progress_data = None
     if target_project:
-        stages = stages_cache.get(target_project.id) or await _get_production_stages(db, target_project.id)
+        stages = await _get_stages_cached(db, target_project.id)
         overall = sum(s["weight"] for s in stages if s["completed"])
         prod_progress_data = {
             "project_id": str(target_project.id),
@@ -116,10 +120,7 @@ async def get_dashboard_stats(
             ),
             or_(
                 and_(
-                    or_(
-                        Task.task_type.ilike("%qc%"),
-                        Task.task_type.ilike("%quality%"),
-                    ),
+                    Task.task_type.ilike("%qc%"),
                     Task.status == "completed",
                 ),
                 Task.status == "failed",
@@ -148,7 +149,7 @@ async def get_dashboard_stats(
             "description": t.error_message or f"任务 {t.task_type} 待处理",
             "priority": priority,
             "created_at": t.created_at.isoformat() if t.created_at else None,
-            "related_url": f"/projects/{t.project_id}/quality" if t.project_id else None,
+            "related_url": f"/projects/{t.project_id}/tasks" if t.project_id else None,
             "related_project_id": str(t.project_id) if t.project_id else None,
         })
 
@@ -169,87 +170,162 @@ async def get_dashboard_stats(
     })
 
 
-async def _get_production_stages(db: AsyncSession, project_id):
-    """检查生产各阶段是否完成"""
+async def _get_stages_cached(db: AsyncSession, project_id) -> list:
+    """_get_production_stages 的 30s TTL 结果缓存（仅 Dashboard 使用）。
 
-    # ---- novel_processing: 是否有 novel 且有章节已清洗 ----
+    key 仅依赖 project_id（结果与 db 无关），同一项目 30 秒内只全量计算一次。
+    项目详情页（projects.py 的 get_project）仍直接调用 _get_production_stages，
+    保证详情页看到的是实时进度。
+    """
+    key = str(project_id)
+    now = time.monotonic()
+    hit = _stages_cache.get(key)
+    if hit and now - hit[1] < _STAGES_CACHE_TTL:
+        return hit[0]
+    stages = await _get_production_stages(db, project_id)
+    _stages_cache[key] = (stages, now)
+    return stages
+
+
+async def _get_production_stages(db: AsyncSession, project_id):
+    """检查生产各阶段进度（8 个工序）。
+
+    规则：
+    - 小说导入：导入小说（存在 Novel 记录）后完成
+    - 角色设计：所有角色都生成默认形象图后完成
+    - 世界观构建：世界观存在且所有场景/道具/建筑/服装资产都生成图片后完成
+    - 脚本生成 / 分镜设计 / AI排版：拿到 AI 数据（对应章节表有记录）即完成
+    - 画面生成：已生成漫画页数 / 总页数（允许 10%、11% 等中间进度）
+    - 导出：点击过导出（存在 export 任务记录）即完成
+    """
+    # 项目下 novel_ids 子查询（多个阶段共享）
+    sq_novel = select(Novel.id).where(Novel.project_id == project_id)
+
+    # ---- 1. 小说导入：有小说即完成 ----
     result = await db.execute(
         select(Novel.id).where(Novel.project_id == project_id).limit(1)
     )
-    novel = result.scalar()
-    novel_ok = novel is not None
-    chapters_cleaned = False
-    if novel_ok:
-        # 一个项目可能有多本小说，必须用 IN 而不是 =，否则子查询返回多行会报错
-        subq = select(Novel.id).where(Novel.project_id == project_id)
-        result = await db.execute(
-            select(Chapter.id).where(
-                Chapter.novel_id.in_(subq),
-                Chapter.status == "completed",
+    novel_import_done = result.scalar() is not None
+
+    # ---- 2. 角色设计：所有角色都有默认形象图（state_id IS NULL）时完成 ----
+    char_count = (
+        await db.execute(
+            select(func.count(Character.id)).where(Character.project_id == project_id)
+        )
+    ).scalar() or 0
+    character_design_done = False
+    if char_count > 0:
+        char_with_img = (
+            await db.execute(
+                select(func.count(func.distinct(CharacterReferenceImage.character_id))).where(
+                    CharacterReferenceImage.character_id.in_(
+                        select(Character.id).where(Character.project_id == project_id)
+                    ),
+                    CharacterReferenceImage.state_id.is_(None),
+                )
+            )
+        ).scalar() or 0
+        character_design_done = char_with_img >= char_count
+
+    # ---- 3. 世界观构建：世界观存在且所有资产都生成图片时完成 ----
+    world_count = (
+        await db.execute(
+            select(func.count(WorldBuilding.id)).where(WorldBuilding.project_id == project_id)
+        )
+    ).scalar() or 0
+    world_building_done = False
+    if world_count > 0:
+        sq_world = select(WorldBuilding.id).where(WorldBuilding.project_id == project_id)
+
+        # O14: 四类资产（场景/道具/建筑/服装）的计数合并为一条 UNION ALL 查询，
+        # 原实现每类 2 条（共 8 条），合并后仅 2 条。
+        def _asset_count_query(with_img: bool):
+            subs = []
+            for model in (SceneAsset, Prop, Building, Outfit):
+                cond = model.world_id.in_(sq_world)
+                if with_img:
+                    cond = and_(cond, model.image_url.isnot(None), model.image_url != "")
+                subs.append(select(model.id).where(cond))
+            return select(func.count()).select_from(union_all(*subs).subquery())
+
+        total_assets = (
+            await db.execute(_asset_count_query(with_img=False))
+        ).scalar() or 0
+        assets_with_img = (
+            await db.execute(_asset_count_query(with_img=True))
+        ).scalar() or 0
+        world_building_done = total_assets > 0 and assets_with_img >= total_assets
+
+    # ---- 4. 脚本生成：有脚本数据即完成 ----
+    script_done = (
+        await db.execute(
+            select(ScriptChapter.id).where(ScriptChapter.novel_id.in_(sq_novel)).limit(1)
+        )
+    ).scalar() is not None
+
+    # ---- 5. 分镜设计：有分镜数据即完成 ----
+    storyboard_done = (
+        await db.execute(
+            select(StoryboardChapter.id).where(StoryboardChapter.novel_id.in_(sq_novel)).limit(1)
+        )
+    ).scalar() is not None
+
+    # ---- 6. AI排版：有排版数据即完成 ----
+    layout_done = (
+        await db.execute(
+            select(LayoutChapter.id).where(LayoutChapter.novel_id.in_(sq_novel)).limit(1)
+        )
+    ).scalar() is not None
+
+    # ---- 7. 画面生成：已生成漫画页数 / 总页数（允许中间进度） ----
+    sq_layout_ch = select(LayoutChapter.id).where(LayoutChapter.novel_id.in_(sq_novel))
+    total_pages = (
+        await db.execute(
+            select(func.count(LayoutPage.id)).where(LayoutPage.chapter_id.in_(sq_layout_ch))
+        )
+    ).scalar() or 0
+    image_progress = 0
+    if total_pages > 0:
+        generated_pages = (
+            await db.execute(
+                select(func.count(func.distinct(GeneratedImage.page_id))).where(
+                    GeneratedImage.page_id.in_(
+                        select(LayoutPage.id).where(LayoutPage.chapter_id.in_(sq_layout_ch))
+                    )
+                )
+            )
+        ).scalar() or 0
+        image_progress = int(round(generated_pages / total_pages * 100))
+
+    # ---- 8. 导出：点击过导出（存在 export 任务记录）即完成 ----
+    export_done = (
+        await db.execute(
+            select(Task.id).where(
+                Task.project_id == project_id,
+                Task.task_type.ilike("%export%"),
             ).limit(1)
         )
-        chapters_cleaned = result.scalar() is not None
-
-    # ---- world_setting: 是否有世界观设定 ----
-    result = await db.execute(
-        select(WorldBuilding.id).where(WorldBuilding.project_id == project_id).limit(1)
-    )
-    world_done = result.scalar() is not None
-
-    # ---- character_design: 是否有角色 ----
-    result = await db.execute(
-        select(func.count(Character.id)).where(Character.project_id == project_id)
-    )
-    char_done = (result.scalar() or 0) > 0
-
-    # 项目下的 novel_ids 子查询（多个阶段共享）
-    sq_novel = select(Novel.id).where(Novel.project_id == project_id)
-
-    # ---- story_breakdown: 是否有 scene 和 panel ----
-    # Scene/Panel 模型已删除，story_done = False
-    sq_chapter = select(Chapter.id).where(Chapter.novel_id.in_(sq_novel))
-    story_done = False
-
-    # ---- storyboard_layout: 是否有分页/版式数据 ----
-    # Page 模型已删除，layout_done = False
-    layout_done = False
-
-    # ---- prompt_generation: 是否有 prompt ----
-    # Prompt 模型已删除，prompt_done = False
-    prompt_done = False
-
-    # ---- ai_generation: 是否有生成的 images ----
-    # Image 模型已删除，ai_done = False
-    ai_done = False
-
-    # ---- quality_check: 是否有质量检测数据 ----
-    # Image 模型已删除，quality_done = False
-    quality_done = False
-
-    # ---- edit_export: 是否有导出记录 ----
-    result = await db.execute(
-        select(Task.id).where(
-            Task.project_id == project_id,
-            Task.task_type.ilike("%export%"),
-            Task.status == "completed",
-        ).limit(1)
-    )
-    export_done = result.scalar() is not None
+    ).scalar() is not None
 
     stages = [
-        {"stage": "novel_processing", "label": "小说处理", "weight": 10, "completed": novel_ok and chapters_cleaned},
-        {"stage": "world_setting", "label": "世界观设定", "weight": 10, "completed": world_done},
-        {"stage": "character_design", "label": "角色设计", "weight": 15, "completed": char_done},
-        {"stage": "story_breakdown", "label": "剧情拆解", "weight": 15, "completed": story_done},
-        {"stage": "storyboard_layout", "label": "分镜版式", "weight": 15, "completed": layout_done},
-        {"stage": "prompt_generation", "label": "Prompt生成", "weight": 10, "completed": prompt_done},
-        {"stage": "ai_generation", "label": "AI生图", "weight": 15, "completed": ai_done},
-        {"stage": "quality_check", "label": "质量检测", "weight": 5, "completed": quality_done},
-        {"stage": "edit_export", "label": "编辑导出", "weight": 5, "completed": export_done},
+        {"stage": "novel_import", "name": "小说导入", "weight": 12.5, "completed": novel_import_done},
+        {"stage": "character_design", "name": "角色设计", "weight": 12.5, "completed": character_design_done},
+        {"stage": "world_building", "name": "世界观构建", "weight": 12.5, "completed": world_building_done},
+        {"stage": "script_generation", "name": "脚本生成", "weight": 12.5, "completed": script_done},
+        {"stage": "storyboard", "name": "分镜设计", "weight": 12.5, "completed": storyboard_done},
+        {"stage": "layout", "name": "AI排版", "weight": 12.5, "completed": layout_done},
+        {"stage": "image_generation", "name": "画面生成", "weight": 12.5, "completed": image_progress >= 100, "progress": image_progress},
+        {"stage": "export", "name": "导出", "weight": 12.5, "completed": export_done},
     ]
-    # 前端 Dashboard 读的是 name/status/progress，这里由 label/completed 派生，保留原字段供其他调用方使用
+    # 前端 Dashboard 读的是 name/status/progress：
+    # 画面生成允许中间进度（0 < progress < 100 → in_progress），其余工序仅 0% / 100%
     for s in stages:
-        s["name"] = s["label"]
-        s["status"] = "completed" if s["completed"] else "pending"
-        s["progress"] = 100 if s["completed"] else 0
+        if "progress" not in s:
+            s["progress"] = 100 if s["completed"] else 0
+        if s["completed"]:
+            s["status"] = "completed"
+        elif s["progress"] > 0:
+            s["status"] = "in_progress"
+        else:
+            s["status"] = "pending"
     return stages
