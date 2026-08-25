@@ -1,6 +1,5 @@
 import { Button, Card, Col, DatePicker, Input, Row, Select, Space, Table, Tag, Tooltip, Typography } from 'antd'
 import {
-  PlusOutlined,
   ReloadOutlined,
   RedoOutlined,
   StopOutlined,
@@ -53,7 +52,6 @@ export interface TaskListTabProps {
   onRefresh: () => void
   onBatchCancel: () => void
   onBatchRetry: () => void
-  onCreateTask: () => void
   onCancelTask: (id: string) => void
   onRetryTask: (id: string) => void
 }
@@ -88,7 +86,6 @@ export default function TaskListTab({
   onRefresh,
   onBatchCancel,
   onBatchRetry,
-  onCreateTask,
   onCancelTask,
   onRetryTask,
 }: TaskListTabProps) {
@@ -286,11 +283,6 @@ export default function TaskListTab({
               </Button>
             </>
           )}
-        </Space>
-        <Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={onCreateTask}>
-            手动创建任务
-          </Button>
         </Space>
       </div>
 

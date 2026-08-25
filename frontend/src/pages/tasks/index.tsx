@@ -2,17 +2,13 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Card, Modal, Space, Tabs, Typography, message } from 'antd'
 import apiClient from '../../api/client'
-import { useAuthStore } from '../../stores/authStore'
-import CreateTaskModal from './components/CreateTaskModal'
-import KanbanView from './components/KanbanView'
 import TaskListTab from './components/TaskListTab'
-import type { QueueData, TaskItem } from './components/types'
+import type { TaskItem } from './components/types'
 
 const { Text } = Typography
 
 export default function TaskCenter() {
   const [searchParams, setSearchParams] = useSearchParams()
-  const token = useAuthStore((s) => s.token)
 
   // Tab
   const [activeTab, setActiveTab] = useState('list')
@@ -43,13 +39,7 @@ export default function TaskCenter() {
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [batchLoading, setBatchLoading] = useState(false)
 
-  // 创建任务
-  const [createModalOpen, setCreateModalOpen] = useState(false)
-
-  // 队列看板
-  const [kanbanData, setKanbanData] = useState<QueueData | null>(null)
-  const [kanbanLoading, setKanbanLoading] = useState(false)
-  const wsRef = useRef<WebSocket | null>(null)
+  // 列表轮询
   const pollingRef = useRef<ReturnType<typeof setInterval>>()
 
   // ─── 定时刷新 ───
@@ -68,61 +58,6 @@ export default function TaskCenter() {
       }
     }
   }, [activeTab, page, pageSize, statusFilter, typeFilter, priorityFilter, projectFilter, sortBy, sortOrder, dateRange])
-
-  // ─── WebSocket 连接（队列看板） ───
-
-  useEffect(() => {
-    if (activeTab !== 'kanban' || !token) return
-
-    const wsUrl = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/tasks?token=${token}`
-    const ws = new WebSocket(wsUrl)
-    wsRef.current = ws
-
-    ws.onopen = () => {
-      console.log('[Kanban WS] connected')
-    }
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data)
-        if (msg.type === 'queue_update') {
-          setKanbanData(msg.data)
-        }
-      } catch (e) {
-        console.error('[Kanban WS] parse error', e)
-      }
-    }
-
-    ws.onclose = () => {
-      console.log('[Kanban WS] disconnected')
-      // fallback to polling
-    }
-
-    ws.onerror = () => {
-      ws.close()
-    }
-
-    return () => {
-      ws.close()
-      wsRef.current = null
-    }
-  }, [activeTab, token])
-
-  // 如果 WebSocket 不可用，回退到 HTTP 轮询
-  useEffect(() => {
-    if (activeTab !== 'kanban') return
-
-    // 如果没有 WebSocket 数据，每3秒轮询
-    const fallbackTimer = setInterval(() => {
-      if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-        fetchKanban()
-      }
-    }, 3000)
-
-    fetchKanban()
-
-    return () => clearInterval(fallbackTimer)
-  }, [activeTab])
 
   // ─── 数据获取 ───
 
@@ -155,18 +90,6 @@ export default function TaskCenter() {
       if (!silent) setLoading(false)
     }
   }, [page, pageSize, statusFilter, typeFilter, priorityFilter, projectFilter, sortBy, sortOrder, dateRange])
-
-  const fetchKanban = async () => {
-    setKanbanLoading(true)
-    try {
-      const res: any = await apiClient.get('/tasks/queue')
-      setKanbanData(res.data || res)
-    } catch (e) {
-      console.error('获取队列看板失败:', e)
-    } finally {
-      setKanbanLoading(false)
-    }
-  }
 
   // ─── 操作 ───
 
@@ -215,7 +138,7 @@ export default function TaskCenter() {
           }
           setSelectedRowKeys([])
           fetchTasks()
-        } catch (e: any) {
+        } catch {
           message.error('批量取消失败')
         } finally {
           setBatchLoading(false)
@@ -243,7 +166,7 @@ export default function TaskCenter() {
           }
           setSelectedRowKeys([])
           fetchTasks()
-        } catch (e: any) {
+        } catch {
           message.error('批量重试失败')
         } finally {
           setBatchLoading(false)
@@ -333,20 +256,8 @@ export default function TaskCenter() {
           onRefresh={() => fetchTasks()}
           onBatchCancel={handleBatchCancel}
           onBatchRetry={handleBatchRetry}
-          onCreateTask={() => setCreateModalOpen(true)}
           onCancelTask={handleCancel}
           onRetryTask={handleRetry}
-        />
-      ),
-    },
-    {
-      key: 'kanban',
-      label: 'AI队列看板',
-      children: (
-        <KanbanView
-          kanbanData={kanbanData}
-          kanbanLoading={kanbanLoading}
-          onRefresh={fetchKanban}
         />
       ),
     },
@@ -362,18 +273,12 @@ export default function TaskCenter() {
           tabBarExtraContent={
             <Space>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                {activeTab === 'list' ? '每5秒自动刷新' : '每3秒实时推送'}
+                每5秒自动刷新
               </Text>
             </Space>
           }
         />
       </Card>
-
-      <CreateTaskModal
-        open={createModalOpen}
-        onClose={() => setCreateModalOpen(false)}
-        onSuccess={() => fetchTasks()}
-      />
     </>
   )
 }

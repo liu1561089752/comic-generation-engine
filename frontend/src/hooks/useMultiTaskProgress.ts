@@ -18,6 +18,7 @@ interface TaskEntry {
   progress: number
   errorMessage: string | null
   logs: Array<{ timestamp: string; message: string; level: string }>
+  outputData: any
   polling: boolean
   failCount: number
 }
@@ -96,6 +97,7 @@ export function useMultiTaskProgress({
         progress: 0,
         errorMessage: null,
         logs: [],
+        outputData: null,
         polling: true,
         failCount: 0,
       },
@@ -120,6 +122,7 @@ export function useMultiTaskProgress({
               progress: data.progress || 0,
               errorMessage: data.error_message || null,
               logs: data.logs || [],
+              outputData: data.output_data ?? null,
               failCount: 0,
             },
           }

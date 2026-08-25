@@ -16,7 +16,7 @@ from app.models.layout import (
 )
 
 # === 世界观资产线 ===
-from app.models.world import WorldBuilding, SceneAsset, Prop, Building, Outfit, StyleTemplate
+from app.models.world import WorldBuilding, SceneAsset, Prop, Building, Outfit
 
 # === 角色线 ===
 from app.models.character import (
@@ -39,7 +39,7 @@ all_models = [
     LayoutChapter, LayoutPage, LayoutShot,
     ImagePrompt, ReferenceMatch, GeneratedImage,
     # 世界观资产线
-    WorldBuilding, SceneAsset, Prop, Building, Outfit, StyleTemplate,
+    WorldBuilding, SceneAsset, Prop, Building, Outfit,
     # 角色线
     Character, CharacterState, CharacterRelation,
     CharacterOutfit, CharacterReferenceImage,

@@ -19,7 +19,7 @@ from app.core.config import settings
 from app.core.database import async_session_factory
 from app.core.llm_utils import parse_llm_json
 from app.infra.adapters.base_llm import ChatMessage
-from app.infra.adapters.grsai_api_adapter import GRSaiAPIAdapter
+from app.infra.adapters.image_gen_adapter import ImageGenAdapter
 from app.infra.adapters.http_client import HttpClientManager
 from app.infra.adapters.llm_adapter import LLMAdapter
 from app.infra.file_utils import (
@@ -160,6 +160,27 @@ class CharacterService:
 
     async def delete_character(self, character_id: UUID) -> bool:
         return await self.char_repo.delete(character_id)
+
+    async def update_state(
+        self, character_id: UUID, state_id: UUID, data: dict
+    ) -> Optional[CharacterState]:
+        """更新角色状态（名称/别名/描述/排序）。
+
+        校验状态确实属于该角色，防止跨角色越权修改。
+        """
+        result = await self.session.execute(
+            select(CharacterState).where(
+                CharacterState.id == state_id,
+                CharacterState.character_id == character_id,
+            )
+        )
+        state = result.scalar_one_or_none()
+        if state is None:
+            return None
+        for key, value in data.items():
+            setattr(state, key, value)
+        await self.session.flush()
+        return state
 
     # =================================================================
     # 人物关系
@@ -463,7 +484,7 @@ class CharacterService:
         if parent_ref_image_b64:
             params["images"] = [f"data:image/png;base64,{parent_ref_image_b64}"]
 
-        image_gen = GRSaiAPIAdapter()
+        image_gen = ImageGenAdapter()
         gen_result = await image_gen.generate(description, params=params)
 
         image_url = gen_result.get("image_url", "")
@@ -621,7 +642,7 @@ class CharacterService:
         if parent_ref_image_b64:
             params["images"] = [f"data:image/png;base64,{parent_ref_image_b64}"]
 
-        image_gen = GRSaiAPIAdapter()
+        image_gen = ImageGenAdapter()
         gen_result = await image_gen.generate(description, params=params)
 
         image_url = gen_result.get("image_url", "")

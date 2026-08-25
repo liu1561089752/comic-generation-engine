@@ -71,23 +71,6 @@ export interface Outfit {
   image_url?: string
 }
 
-// 风格模板
-export interface StyleTemplate {
-  id: string
-  project_id: string
-  name: string
-  aspect_ratio?: string
-  width?: number
-  art_style?: string
-  coloring_style?: string
-  lineart_style?: string
-  lighting_style?: string
-  negative_prompt?: string
-  is_default?: boolean
-  created_at: string
-  updated_at: string
-}
-
 export interface PaginatedItems<T> {
   items: T[]
   total: number

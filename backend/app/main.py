@@ -92,7 +92,7 @@ def create_app() -> FastAPI:
         return response
 
     # 注册路由
-    from app.routers import auth, projects, novels, characters, generation, export, system, tasks, ws, search, worlds, notifications, prompts, dashboard, quality, proofread
+    from app.routers import auth, projects, novels, characters, generation, export, system, tasks, ws, search, worlds, notifications, prompts, dashboard
     from app.core.dependencies import require_project
 
     # 以下挂在 /api/v1/projects 下的 router，其每条路由路径都以 /{project_id} 开头，
@@ -114,10 +114,8 @@ def create_app() -> FastAPI:
     app.include_router(worlds.router, prefix="/api/v1/projects", tags=["世界观"], dependencies=_project_scoped)
     app.include_router(notifications.router, prefix="/api/v1/notifications", tags=["通知"])
     app.include_router(dashboard.router, prefix="/api/v1/dashboard", tags=["仪表盘"])
-    app.include_router(quality.router, prefix="/api/v1/projects", tags=["质量检测"], dependencies=_project_scoped)
     app.include_router(prompts.router, prefix="/api/v1", tags=["Prompt中心"])
     app.include_router(system.model_router, prefix="/api/v1/models", tags=["模型配置"])
-    app.include_router(proofread.router, prefix="/api/v1/projects", tags=["生图提示词校对"], dependencies=_project_scoped)
 
     @app.get("/api/v1/health")
     async def health_check():

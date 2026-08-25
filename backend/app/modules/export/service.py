@@ -12,6 +12,7 @@ New architecture compliance:
 - All sync I/O (PIL image processing, font loading, file checks) wrapped with asyncio.to_thread
 - No imports from ``app.services.*`` / ``app.adapters.*`` (legacy paths)
 """
+from app.core.task_types import TASK_EXPORT
 import asyncio
 import ctypes
 import logging
@@ -68,7 +69,7 @@ def _resolve_export_dir(folder_name: str) -> str:
 class ExportService:
     """漫画导出服务 - 将已生成的漫画页面导出为长图 / PNG / JPG 等格式.
 
-    导出记录以 ``Task``（task_type="export"）形式存储，无独立 Export 模型。
+    导出记录以 ``Task``（task_type=TASK_EXPORT）形式存储，无独立 Export 模型。
     """
 
     def __init__(self, session: AsyncSession):
@@ -98,7 +99,7 @@ class ExportService:
         }
         task = await self.task_repo.create(
             project_id=project_id,
-            task_type="export",
+            task_type=TASK_EXPORT,
             status="queued",
             priority="normal",
             progress=0,
@@ -169,7 +170,7 @@ class ExportService:
 
     async def list_exports(self, project_id: UUID) -> list:
         """获取项目的导出历史"""
-        tasks, total = await self.task_repo.list(project_id=project_id, task_type="export")
+        tasks, total = await self.task_repo.list(project_id=project_id, task_type=TASK_EXPORT)
         return [
             {
                 "id": str(t.id),

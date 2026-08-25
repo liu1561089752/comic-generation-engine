@@ -15,7 +15,6 @@ export const ROUTES = {
   LAYOUT: '/layout',
   PROMPTS: '/prompts',
   GENERATION: '/generation',
-  QUALITY: '/quality',
   EDITOR: '/projects',
   EXPORT: '/projects',
 } as const

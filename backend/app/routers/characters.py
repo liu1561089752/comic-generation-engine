@@ -3,10 +3,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 from pydantic import BaseModel
+from app.core.task_types import TASK_EXTRACT_CHARACTERS, TASK_GENERATE_CHARACTER_IMAGE, TASK_GENERATE_STATE_IMAGE
+import logging
 
-from app.core.database import get_db
+from app.core.database import get_db, async_session_factory
 from app.middleware.auth import get_current_user
 from app.modules.character.service import CharacterService
+from app.infra.task_progress import TaskProgressTracker, find_running_task
+from app.infra.task_registry import spawn_background_task
+from app.infra.task_dispatcher import register_task_runner as _register
 from app.schemas.common import ApiResponse
 from app.schemas.character_schema import (
     CharacterCreate,
@@ -19,8 +24,11 @@ from app.schemas.character_schema import (
     CharacterOutfitResponse,
     CharacterReferenceImageCreate,
     CharacterReferenceImageResponse,
+    CharacterStateUpdate,
 )
 from app.models.character import CharacterState
+
+logger = logging.getLogger(__name__)
 
 
 class ExtractCharactersRequest(BaseModel):
@@ -28,6 +36,84 @@ class ExtractCharactersRequest(BaseModel):
 
 router = APIRouter()
 global_router = APIRouter()
+
+
+# ======================================================================
+# 角色 AI 后台任务（提取角色 / 生成形象 / 生成状态形象）
+# ======================================================================
+
+
+async def _run_extract_characters(
+    project_id: UUID, novel_text: str, tracker: TaskProgressTracker
+):
+    """一键提取角色后台任务 — service 内部短事务写库。"""
+    try:
+        await tracker.set_running("开始提取角色...")
+        async with async_session_factory() as session:
+            service = CharacterService(session)
+            characters = await service.extract_characters_from_novel(project_id, novel_text)
+        items = [
+            CharacterResponse.model_validate(c).model_dump(mode="json") for c in characters
+        ]
+        await tracker.complete(
+            {"items": items, "total": len(characters)},
+            f"成功提取 {len(characters)} 个角色",
+        )
+    except Exception as e:
+        logger.exception(f"提取角色任务失败: {e}")
+        await tracker.fail(str(e))
+
+
+async def _run_generate_character_image(
+    project_id: UUID, character_id: UUID, tracker: TaskProgressTracker
+):
+    """生成角色形象后台任务。"""
+    try:
+        await tracker.set_running("开始生成角色形象...")
+        async with async_session_factory() as session:
+            service = CharacterService(session)
+            result = await service.generate_character_image(character_id, project_id)
+        name = result.get("character_name", "")
+        await tracker.complete(result, f"角色「{name}」形象已生成")
+    except Exception as e:
+        logger.exception(f"生成角色形象任务失败: {e}")
+        await tracker.fail(str(e))
+
+
+async def _run_generate_state_image(
+    project_id: UUID, character_id: UUID, state_id: UUID, tracker: TaskProgressTracker
+):
+    """生成角色状态形象后台任务。"""
+    try:
+        await tracker.set_running("开始生成状态形象...")
+        async with async_session_factory() as session:
+            service = CharacterService(session)
+            result = await service.generate_state_image(character_id, state_id, project_id)
+        name = result.get("state_name", "")
+        await tracker.complete(result, f"状态「{name}」形象已生成")
+    except Exception as e:
+        logger.exception(f"生成状态形象任务失败: {e}")
+        await tracker.fail(str(e))
+
+
+# 注册任务执行器 — 供 retry 功能重新派发后台任务
+@_register(TASK_EXTRACT_CHARACTERS)
+async def _redispatch_extract_characters(task, tracker):
+    novel_text = task.input_data.get("novel_text", "")
+    await _run_extract_characters(task.project_id, novel_text, tracker)
+
+
+@_register(TASK_GENERATE_CHARACTER_IMAGE)
+async def _redispatch_generate_character_image(task, tracker):
+    character_id = UUID(task.input_data["character_id"])
+    await _run_generate_character_image(task.project_id, character_id, tracker)
+
+
+@_register(TASK_GENERATE_STATE_IMAGE)
+async def _redispatch_generate_state_image(task, tracker):
+    character_id = UUID(task.input_data["character_id"])
+    state_id = UUID(task.input_data["state_id"])
+    await _run_generate_state_image(task.project_id, character_id, state_id, tracker)
 
 
 # ======================================================================
@@ -369,22 +455,22 @@ async def extract_characters(
     user_id: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """从小说文本中提取角色"""
-    import logging
-    logger = logging.getLogger(__name__)
+    """从小说文本中提取角色（后台任务，纳入任务中心管理）"""
+    if not data.novel_text:
+        raise HTTPException(status_code=400, detail="请提供小说文本")
     logger.info(f"===== 路由收到提取请求, novel_text长度={len(data.novel_text)} =====")
-    service = CharacterService(db)
-    try:
-        characters = await service.extract_characters_from_novel(project_id, data.novel_text)
-        return ApiResponse(data={
-            "items": [
-                CharacterResponse.model_validate(c).model_dump() for c in characters
-            ],
-            "total": len(characters),
-        })
-    except ValueError as e:
-        logger.info(f"===== 路由捕获 ValueError: {e} =====")
-        raise HTTPException(status_code=400, detail=str(e))
+    existing = await find_running_task(db, project_id, TASK_EXTRACT_CHARACTERS)
+    if existing:
+        return ApiResponse(data={"task_id": str(existing.id), "message": "已有正在执行的提取角色任务"})
+    tracker = await TaskProgressTracker.create(
+        db, project_id, TASK_EXTRACT_CHARACTERS,
+        "提取角色", {"novel_text": data.novel_text}
+    )
+    spawn_background_task(
+        tracker.task.id,
+        _run_extract_characters(project_id, data.novel_text, tracker),
+    )
+    return ApiResponse(data={"task_id": str(tracker.task.id)})
 
 
 @router.post("/{project_id}/characters/{character_id}/generate-image")
@@ -394,15 +480,19 @@ async def generate_character_image(
     user_id: str = Depends(get_current_user),  # D48: 补全认证
     db: AsyncSession = Depends(get_db),
 ):
-    """生成角色形象"""
-    service = CharacterService(db)
-    try:
-        result = await service.generate_character_image(character_id, project_id)
-        return ApiResponse(data=result)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    """生成角色形象（后台任务，纳入任务中心管理）"""
+    existing = await find_running_task(db, project_id, TASK_GENERATE_CHARACTER_IMAGE)
+    if existing:
+        return ApiResponse(data={"task_id": str(existing.id), "message": "已有正在执行的生成形象任务"})
+    tracker = await TaskProgressTracker.create(
+        db, project_id, TASK_GENERATE_CHARACTER_IMAGE,
+        "生成角色形象", {"character_id": str(character_id)}
+    )
+    spawn_background_task(
+        tracker.task.id,
+        _run_generate_character_image(project_id, character_id, tracker),
+    )
+    return ApiResponse(data={"task_id": str(tracker.task.id)})
 
 
 @router.post("/{project_id}/characters/{character_id}/states/{state_id}/generate-image")
@@ -413,12 +503,44 @@ async def generate_state_image(
     user_id: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """生成角色状态形象（以角色主图为参考）"""
+    """生成角色状态形象（以角色主图为参考，后台任务）"""
+    existing = await find_running_task(db, project_id, TASK_GENERATE_STATE_IMAGE)
+    if existing:
+        return ApiResponse(data={"task_id": str(existing.id), "message": "已有正在执行的生成状态形象任务"})
+    tracker = await TaskProgressTracker.create(
+        db, project_id, TASK_GENERATE_STATE_IMAGE,
+        "生成状态形象", {"character_id": str(character_id), "state_id": str(state_id)}
+    )
+    spawn_background_task(
+        tracker.task.id,
+        _run_generate_state_image(project_id, character_id, state_id, tracker),
+    )
+    return ApiResponse(data={"task_id": str(tracker.task.id)})
+
+
+@router.put("/{project_id}/characters/{character_id}/states/{state_id}")
+async def update_character_state(
+    project_id: UUID,
+    character_id: UUID,
+    state_id: UUID,
+    data: CharacterStateUpdate,
+    user_id: str = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """更新角色状态的描述等信息（AI 提取后的人工修正）"""
     service = CharacterService(db)
-    try:
-        result = await service.generate_state_image(character_id, state_id, project_id)
-        return ApiResponse(data=result)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    # 过滤掉 None 值的字段，避免把已有值覆盖为空
+    update_data = {k: v for k, v in data.model_dump().items() if v is not None}
+    state = await service.update_state(character_id, state_id, update_data)
+    if state is None:
+        raise HTTPException(status_code=404, detail="角色状态不存在")
+    return ApiResponse(data={
+        "id": str(state.id),
+        "character_id": str(state.character_id),
+        "name": state.name,
+        "aliases": state.aliases,
+        "description": state.description,
+        "sort_order": state.sort_order,
+        "created_at": state.created_at.isoformat() if state.created_at else None,
+        "updated_at": state.updated_at.isoformat() if state.updated_at else None,
+    })
