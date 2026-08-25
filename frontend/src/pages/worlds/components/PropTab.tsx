@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Button, Space, Table, Tag, Modal, Form, Input, Select, Image, message } from 'antd'
 import { EditOutlined, DeleteOutlined, PlusOutlined, PictureOutlined, SaveOutlined } from '@ant-design/icons'
 import { useWorldStore } from '../../../stores/worldStore'
+import { useMultiTaskProgress } from '../../../hooks/useMultiTaskProgress'
 import EmptyState from '../../../components/common/EmptyState'
 import { extractNovelText } from './extractNovelText'
 import type { Prop } from '../../../types/world'
@@ -44,13 +45,35 @@ export default function PropTab({ projectId, worldId }: Props) {
   const [editingPropDescription, setEditingPropDescription] = useState<EditingDescription | null>(null)
   const [generatingPropImage, setGeneratingPropImage] = useState<string | null>(null)
 
+  // AI 任务进度（一键提取道具 / 生成道具图片 均纳入任务中心管理）
+  const taskProgress = useMultiTaskProgress({
+    projectId,
+    onTaskCompleted: (taskId) => {
+      const output = taskProgress.getTask(taskId)?.outputData
+      if (output?.total != null) {
+        message.success(`成功提取 ${output.total} 个道具`)
+      } else if (output?.prop_name) {
+        message.success(`道具「${output.prop_name}」图片生成成功`)
+      } else {
+        message.success('任务完成')
+      }
+      fetchProps(projectId, worldId)
+    },
+    onTaskFailed: (_taskId, error) => {
+      message.error(error || '任务失败')
+    },
+  })
+
   const handleExtractProps = async () => {
     setExtractPropLoading(true)
     try {
       const novelText = await extractNovelText(projectId)
       if (!novelText) return
-      await aiExtractProps(projectId, worldId, novelText)
-      fetchProps(projectId, worldId)
+      const taskId = await aiExtractProps(projectId, worldId, novelText)
+      if (taskId) {
+        taskProgress.startPolling(taskId)
+        message.info('提取道具任务已提交，可在任务中心查看进度')
+      }
     } catch (e: any) {
       message.error(e.response?.data?.detail || '提取失败')
     } finally {
@@ -73,8 +96,11 @@ export default function PropTab({ projectId, worldId }: Props) {
   const handleGeneratePropImage = async (record: Prop) => {
     setGeneratingPropImage(record.id)
     try {
-      await generatePropImage(projectId, worldId, record.id)
-      message.success(`道具「${record.name}」图片生成成功`)
+      const taskId = await generatePropImage(projectId, worldId, record.id)
+      if (taskId) {
+        taskProgress.startPolling(taskId)
+        message.info('生成图片任务已提交，可在任务中心查看进度')
+      }
     } catch (e: any) {
       message.error(e.response?.data?.detail || '生成失败')
     } finally {

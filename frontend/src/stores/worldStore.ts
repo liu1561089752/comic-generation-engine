@@ -5,7 +5,6 @@ import type {
   Prop,
   Building,
   Outfit,
-  StyleTemplate,
 } from '../types/world'
 import {
   worldApi,
@@ -13,17 +12,13 @@ import {
   propApi,
   buildingApi,
   outfitApi,
-  templateApi,
 } from '../api/worldApi'
 import type {
-  CreateWorldParams,
   UpdateWorldParams,
   CreateSceneAssetParams,
   CreatePropParams,
   CreateBuildingParams,
   CreateOutfitParams,
-  CreateTemplateParams,
-  UpdateTemplateParams,
 } from '../api/worldApi'
 import { message } from 'antd'
 
@@ -36,14 +31,11 @@ interface WorldState {
   props: Prop[]
   buildings: Building[]
   outfits: Outfit[]
-  // 风格模板
-  templates: StyleTemplate[]
   loading: boolean
 
   // 世界观
   fetchWorlds: (projectId: string) => Promise<void>
   fetchWorld: (projectId: string, worldId: string) => Promise<void>
-  createWorld: (projectId: string, data: CreateWorldParams) => Promise<void>
   updateWorld: (projectId: string, worldId: string, data: UpdateWorldParams) => Promise<void>
   deleteWorld: (projectId: string, worldId: string) => Promise<void>
 
@@ -52,14 +44,14 @@ interface WorldState {
   createSceneAsset: (projectId: string, worldId: string, data: CreateSceneAssetParams) => Promise<void>
   updateSceneAsset: (projectId: string, worldId: string, assetId: string, data: Partial<CreateSceneAssetParams>) => Promise<void>
   deleteSceneAsset: (projectId: string, worldId: string, assetId: string) => Promise<void>
-  aiExtractScenes: (projectId: string, worldId: string, novelText: string) => Promise<void>
-  aiExtractProps: (projectId: string, worldId: string, novelText: string) => Promise<void>
-  aiExtractBuildings: (projectId: string, worldId: string, novelText: string) => Promise<void>
-  aiExtractOutfits: (projectId: string, worldId: string, novelText: string) => Promise<void>
-  generateSceneImage: (projectId: string, worldId: string, assetId: string) => Promise<void>
-  generatePropImage: (projectId: string, worldId: string, propId: string) => Promise<void>
-  generateBuildingImage: (projectId: string, worldId: string, buildingId: string) => Promise<void>
-  generateOutfitImage: (projectId: string, worldId: string, outfitId: string) => Promise<void>
+  aiExtractScenes: (projectId: string, worldId: string, novelText: string) => Promise<string>
+  aiExtractProps: (projectId: string, worldId: string, novelText: string) => Promise<string>
+  aiExtractBuildings: (projectId: string, worldId: string, novelText: string) => Promise<string>
+  aiExtractOutfits: (projectId: string, worldId: string, novelText: string) => Promise<string>
+  generateSceneImage: (projectId: string, worldId: string, assetId: string) => Promise<string>
+  generatePropImage: (projectId: string, worldId: string, propId: string) => Promise<string>
+  generateBuildingImage: (projectId: string, worldId: string, buildingId: string) => Promise<string>
+  generateOutfitImage: (projectId: string, worldId: string, outfitId: string) => Promise<string>
 
   // 道具
   fetchProps: (projectId: string, worldId: string) => Promise<void>
@@ -81,14 +73,7 @@ interface WorldState {
 
   // AI辅助
   aiAssistWorld: (projectId: string, novelText: string) => Promise<any>
-  aiCreateWorld: (projectId: string, novelText: string) => Promise<WorldBuilding | null>
-
-  // 风格模板
-  fetchTemplates: (projectId: string) => Promise<void>
-  createTemplate: (projectId: string, data: CreateTemplateParams) => Promise<void>
-  updateTemplate: (projectId: string, templateId: string, data: UpdateTemplateParams) => Promise<void>
-  deleteTemplate: (projectId: string, templateId: string) => Promise<void>
-  setDefaultTemplate: (projectId: string, templateId: string) => Promise<void>
+  aiCreateWorld: (projectId: string, novelText: string) => Promise<string>
 
   // D58: 请求 ID 追踪，防止快速切换项目/世界观时旧请求覆写新数据
   _fetchWorldsRequestId: number
@@ -97,7 +82,6 @@ interface WorldState {
   _fetchPropsRequestId: number
   _fetchBuildingsRequestId: number
   _fetchOutfitsRequestId: number
-  _fetchTemplatesRequestId: number
 }
 
 export const useWorldStore = create<WorldState>((set, get) => ({
@@ -107,7 +91,6 @@ export const useWorldStore = create<WorldState>((set, get) => ({
   props: [],
   buildings: [],
   outfits: [],
-  templates: [],
   loading: false,
   _fetchWorldsRequestId: 0,
   _fetchWorldRequestId: 0,
@@ -115,7 +98,6 @@ export const useWorldStore = create<WorldState>((set, get) => ({
   _fetchPropsRequestId: 0,
   _fetchBuildingsRequestId: 0,
   _fetchOutfitsRequestId: 0,
-  _fetchTemplatesRequestId: 0,
 
   // ======================================================================
   // 世界观
@@ -158,18 +140,6 @@ export const useWorldStore = create<WorldState>((set, get) => ({
       if (get()._fetchWorldRequestId === requestId) {
         set({ loading: false })
       }
-    }
-  },
-
-  createWorld: async (projectId, data) => {
-    set({ loading: true })
-    try {
-      await worldApi.create(projectId, data)
-    } catch (e) {
-      console.error('创建世界观失败:', e)
-      throw e
-    } finally {
-      set({ loading: false })
     }
   },
 
@@ -261,9 +231,8 @@ export const useWorldStore = create<WorldState>((set, get) => ({
   aiExtractScenes: async (projectId, worldId, novelText) => {
     set({ loading: true })
     try {
-      const res = await sceneAssetApi.aiExtract(projectId, worldId, { novel_text: novelText })
-      set({ sceneAssets: res.data?.items ?? [] })
-      message.success(`成功提取 ${res.data?.total || 0} 个场景`)
+      const res: any = await sceneAssetApi.aiExtract(projectId, worldId, { novel_text: novelText })
+      return res.data?.task_id || ''
     } catch (e: any) {
       console.error('AI提取场景失败:', e)
       message.error(e.response?.data?.detail || '提取失败')
@@ -276,9 +245,8 @@ export const useWorldStore = create<WorldState>((set, get) => ({
   aiExtractProps: async (projectId, worldId, novelText) => {
     set({ loading: true })
     try {
-      const res = await sceneAssetApi.aiExtractProps(projectId, worldId, { novel_text: novelText })
-      set({ props: res.data?.items ?? [] })
-      message.success(`成功提取 ${res.data?.total || 0} 个道具`)
+      const res: any = await sceneAssetApi.aiExtractProps(projectId, worldId, { novel_text: novelText })
+      return res.data?.task_id || ''
     } catch (e: any) {
       console.error('AI提取道具失败:', e)
       message.error(e.response?.data?.detail || '提取失败')
@@ -291,9 +259,8 @@ export const useWorldStore = create<WorldState>((set, get) => ({
   aiExtractBuildings: async (projectId, worldId, novelText) => {
     set({ loading: true })
     try {
-      const res = await sceneAssetApi.aiExtractBuildings(projectId, worldId, { novel_text: novelText })
-      set({ buildings: res.data?.items ?? [] })
-      message.success(`成功提取 ${res.data?.total || 0} 个建筑`)
+      const res: any = await sceneAssetApi.aiExtractBuildings(projectId, worldId, { novel_text: novelText })
+      return res.data?.task_id || ''
     } catch (e: any) {
       console.error('AI提取建筑失败:', e)
       message.error(e.response?.data?.detail || '提取失败')
@@ -306,9 +273,8 @@ export const useWorldStore = create<WorldState>((set, get) => ({
   aiExtractOutfits: async (projectId, worldId, novelText) => {
     set({ loading: true })
     try {
-      const res = await sceneAssetApi.aiExtractOutfits(projectId, worldId, { novel_text: novelText })
-      set({ outfits: res.data?.items ?? [] })
-      message.success(`成功提取 ${res.data?.total || 0} 个服装`)
+      const res: any = await sceneAssetApi.aiExtractOutfits(projectId, worldId, { novel_text: novelText })
+      return res.data?.task_id || ''
     } catch (e: any) {
       console.error('AI提取服装失败:', e)
       message.error(e.response?.data?.detail || '提取失败')
@@ -319,27 +285,23 @@ export const useWorldStore = create<WorldState>((set, get) => ({
   },
 
   generateSceneImage: async (projectId, worldId, assetId) => {
-    await sceneAssetApi.generateSceneImage(projectId, worldId, assetId)
-    const res = await sceneAssetApi.list(projectId, worldId)
-    set({ sceneAssets: res.data?.items ?? [] })
+    const res: any = await sceneAssetApi.generateSceneImage(projectId, worldId, assetId)
+    return res.data?.task_id || ''
   },
 
   generatePropImage: async (projectId, worldId, propId) => {
-    await propApi.generateImage(projectId, worldId, propId)
-    const res = await propApi.list(projectId, worldId)
-    set({ props: res.data?.items ?? [] })
+    const res: any = await propApi.generateImage(projectId, worldId, propId)
+    return res.data?.task_id || ''
   },
 
   generateBuildingImage: async (projectId, worldId, buildingId) => {
-    await buildingApi.generateImage(projectId, worldId, buildingId)
-    const res = await buildingApi.list(projectId, worldId)
-    set({ buildings: res.data?.items ?? [] })
+    const res: any = await buildingApi.generateImage(projectId, worldId, buildingId)
+    return res.data?.task_id || ''
   },
 
   generateOutfitImage: async (projectId, worldId, outfitId) => {
-    await outfitApi.generateImage(projectId, worldId, outfitId)
-    const res = await outfitApi.list(projectId, worldId)
-    set({ outfits: res.data?.items ?? [] })
+    const res: any = await outfitApi.generateImage(projectId, worldId, outfitId)
+    return res.data?.task_id || ''
   },
 
   // ======================================================================
@@ -539,83 +501,11 @@ export const useWorldStore = create<WorldState>((set, get) => ({
   aiCreateWorld: async (projectId, novelText) => {
     set({ loading: true })
     try {
-      const res = await worldApi.aiCreate(projectId, { novel_text: novelText })
-      return res.data
+      const res: any = await worldApi.aiCreate(projectId, { novel_text: novelText })
+      return res.data?.task_id || ''
     } catch (e: any) {
       console.error('AI自动创建世界观失败:', e)
       message.error(e.response?.data?.detail || 'AI创建失败')
-      throw e
-    } finally {
-      set({ loading: false })
-    }
-  },
-
-  // ======================================================================
-  // 风格模板
-  // ======================================================================
-
-  fetchTemplates: async (projectId) => {
-    const requestId = get()._fetchTemplatesRequestId + 1
-    set({ loading: true, _fetchTemplatesRequestId: requestId })
-    try {
-      const res = await templateApi.list(projectId)
-      if (get()._fetchTemplatesRequestId !== requestId) return
-      set({ templates: res.data?.items ?? [] })
-    } catch (e) {
-      console.error('获取模板列表失败:', e)
-      if (get()._fetchTemplatesRequestId === requestId) {
-        set({ templates: [] })
-      }
-      throw e
-    } finally {
-      if (get()._fetchTemplatesRequestId === requestId) {
-        set({ loading: false })
-      }
-    }
-  },
-
-  createTemplate: async (projectId, data) => {
-    set({ loading: true })
-    try {
-      await templateApi.create(projectId, data)
-    } catch (e) {
-      console.error('创建模板失败:', e)
-      throw e
-    } finally {
-      set({ loading: false })
-    }
-  },
-
-  updateTemplate: async (projectId, templateId, data) => {
-    set({ loading: true })
-    try {
-      await templateApi.update(projectId, templateId, data)
-    } catch (e) {
-      console.error('更新模板失败:', e)
-      throw e
-    } finally {
-      set({ loading: false })
-    }
-  },
-
-  deleteTemplate: async (projectId, templateId) => {
-    set({ loading: true })
-    try {
-      await templateApi.delete(projectId, templateId)
-    } catch (e) {
-      console.error('删除模板失败:', e)
-      throw e
-    } finally {
-      set({ loading: false })
-    }
-  },
-
-  setDefaultTemplate: async (projectId, templateId) => {
-    set({ loading: true })
-    try {
-      await templateApi.setDefault(projectId, templateId)
-    } catch (e) {
-      console.error('设置默认模板失败:', e)
       throw e
     } finally {
       set({ loading: false })

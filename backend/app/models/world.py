@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, String, Boolean, Text, DateTime, ForeignKey, JSON
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -127,27 +127,3 @@ class Outfit(Base):
 
     def __repr__(self):
         return f"<Outfit(id={self.id}, name='{self.name}', style='{self.style}')>"
-
-
-class StyleTemplate(Base):
-    """风格模板 - 漫画视觉风格配置"""
-    __tablename__ = "style_templates"
-
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False, index=True)
-    name = Column(String(200), nullable=False)
-    aspect_ratio = Column(String(20), default="3:4")
-    width = Column(String(20), default="1080")
-    art_style = Column(Text, nullable=True)
-    coloring_style = Column(Text, nullable=True)
-    lineart_style = Column(Text, nullable=True)
-    lighting_style = Column(Text, nullable=True)
-    negative_prompt = Column(Text, nullable=True)
-    is_default = Column(Boolean, default=False)
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
-
-    project = relationship("Project", back_populates="style_templates")
-
-    def __repr__(self):
-        return f"<StyleTemplate(id={self.id}, name='{self.name}', project_id={self.project_id})>"

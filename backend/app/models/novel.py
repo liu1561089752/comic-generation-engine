@@ -27,7 +27,6 @@ class Project(Base):
     user = relationship("User", back_populates="projects")
     characters = relationship("Character", back_populates="project", cascade="all, delete-orphan")
     world_buildings = relationship("WorldBuilding", back_populates="project", cascade="all, delete-orphan")
-    style_templates = relationship("StyleTemplate", back_populates="project", cascade="all, delete-orphan")
     tasks = relationship("Task", back_populates="project", cascade="all, delete-orphan")
     character_relations = relationship("CharacterRelation", back_populates="project", cascade="all, delete-orphan")
 

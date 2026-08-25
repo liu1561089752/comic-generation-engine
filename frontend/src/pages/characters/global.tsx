@@ -1,47 +1,24 @@
-import { useEffect, useState, useCallback } from 'react'
-import { Card, Row, Col, Avatar, message } from 'antd'
-import { TeamOutlined } from '@ant-design/icons'
+import { useState } from 'react'
+import { Card } from 'antd'
 import { useNavigate } from 'react-router-dom'
-import { characterApi } from '../../api/characterApi'
-import type { Character } from '../../types/character'
 import ProjectFilter from '../../components/common/ProjectFilter'
 import EmptyState from '../../components/common/EmptyState'
-import Loading from '../../components/common/Loading'
-import { formatDate } from '../../utils/format'
 
+/**
+ * 人物IP（全局入口）：
+ * 与小说管理一致——先提示选择项目，选择后直接跳转到对应项目的人物IP管理页。
+ */
 export default function CharacterGlobalList() {
   const navigate = useNavigate()
-  const [characters, setCharacters] = useState<Character[]>([])
-  const [loading, setLoading] = useState(false)
   const [projectId, setProjectId] = useState<string | undefined>(undefined)
-  const [searchText, setSearchText] = useState('')
 
-  const fetchAllCharacters = useCallback(async () => {
-    setLoading(true)
-    try {
-      const params: { search?: string } = {}
-      if (searchText) params.search = searchText
-
-      let list: Character[] = []
-      if (projectId) {
-        const res: any = await characterApi.list(projectId, params)
-        list = res.data?.items || res.data || []
-      } else {
-        const res: any = await characterApi.listAll(params)
-        list = res.data?.items || res.data || []
-      }
-      setCharacters(Array.isArray(list) ? list : [])
-    } catch {
-      message.error('获取角色列表失败')
-      setCharacters([])
-    } finally {
-      setLoading(false)
+  const handleProjectChange = (newProjectId: string | undefined) => {
+    if (newProjectId) {
+      navigate(`/projects/${newProjectId}/characters`, { replace: true })
+    } else {
+      setProjectId(undefined)
     }
-  }, [projectId, searchText])
-
-  useEffect(() => {
-    fetchAllCharacters()
-  }, [fetchAllCharacters])
+  }
 
   return (
     <div>
@@ -52,58 +29,13 @@ export default function CharacterGlobalList() {
       <Card style={{ marginBottom: 16 }}>
         <ProjectFilter
           projectId={projectId}
-          onProjectChange={setProjectId}
-          searchPlaceholder="搜索角色名称"
-          searchValue={searchText}
-          onSearchChange={setSearchText}
+          onProjectChange={handleProjectChange}
+          showSearch={false}
         />
       </Card>
 
-      {loading ? (
-        <Loading tip="加载人物列表..." />
-      ) : characters.length === 0 ? (
-        <EmptyState description="暂无人物数据" />
-      ) : (
-        <>
-          <div style={{ marginBottom: 12, color: '#666', fontSize: 13 }}>
-            共 {characters.length} 个角色
-          </div>
-          <Row gutter={[16, 16]}>
-            {characters.map((character) => (
-              <Col key={character.id} xs={24} sm={12} md={8} lg={6} xl={4}>
-                <Card
-                  hoverable
-                  onClick={() => {
-                    if (projectId) {
-                      navigate(`/projects/${projectId}/characters/${character.id}`)
-                    } else {
-                      navigate(`/characters/${character.id}?projectId=${character.project_id}`)
-                    }
-                  }}
-                  style={{ height: '100%', cursor: 'pointer' }}
-                  styles={{ body: { padding: '16px 12px' } }}
-                >
-                  <div style={{ textAlign: 'center' }}>
-                    <Avatar
-                      size={56}
-                      icon={<TeamOutlined />}
-                      style={{ backgroundColor: '#1677ff', marginBottom: 8 }}
-                    />
-                    <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, textAlign: 'center' }}>
-                      {character.name}
-                    </div>
-                    <div style={{ fontSize: 11, color: '#999' }}>
-                      {character.aliases || '暂无别名'}
-                    </div>
-                    <div style={{ marginTop: 4, fontSize: 12, color: '#999' }}>
-                      创建于 {formatDate(character.created_at, 'YYYY-MM-DD')}
-                    </div>
-                  </div>
-                </Card>
-              </Col>
-            ))}
-          </Row>
-        </>
+      {!projectId && (
+        <EmptyState description="请先选择一个项目，进入该项目的人物IP管理" />
       )}
     </div>
   )

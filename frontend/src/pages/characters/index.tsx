@@ -5,6 +5,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useCharacterStore } from '../../stores/characterStore'
 import { characterApi } from '../../api/characterApi'
 import { novelApi } from '../../api/novelApi'
+import { useMultiTaskProgress } from '../../hooks/useMultiTaskProgress'
 import type { Character } from '../../types/character'
 import CharacterForm from '../../components/CharacterForm'
 import EmptyState from '../../components/common/EmptyState'
@@ -14,6 +15,12 @@ const { TextArea } = AntInput
 
 interface EditingDescription {
   id: string
+  description: string
+}
+
+interface EditingStateDescription {
+  characterId: string
+  stateId: string
   description: string
 }
 
@@ -33,9 +40,31 @@ export default function CharacterList() {
   const [createLoading, setCreateLoading] = useState(false)
   const [extractLoading, setExtractLoading] = useState(false)
   const [editingDescription, setEditingDescription] = useState<EditingDescription | null>(null)
+  const [editingStateDescription, setEditingStateDescription] = useState<EditingStateDescription | null>(null)
   const [generatingImage, setGeneratingImage] = useState<string | null>(null)
   const [generatingStateId, setGeneratingStateId] = useState<string | null>(null)
-  const [stateImageMap, setStateImageMap] = useState<Record<string, Record<string, string>>>({})
+
+  // AI 任务进度（提取角色 / 生成形象 / 生成状态形象 均纳入任务中心管理）
+  const taskProgress = useMultiTaskProgress({
+    projectId,
+    onTaskCompleted: (taskId) => {
+      if (!projectId) return
+      const output = taskProgress.getTask(taskId)?.outputData
+      if (output?.total != null) {
+        message.success(`成功提取 ${output.total} 个角色`)
+      } else if (output?.state_name) {
+        message.success(`状态「${output.state_name}」形象生成成功`)
+      } else if (output?.character_name) {
+        message.success(`角色「${output.character_name}」形象生成成功`)
+      } else {
+        message.success('任务完成')
+      }
+      fetchCharacters(projectId, { search: searchText })
+    },
+    onTaskFailed: (_taskId, error) => {
+      message.error(error || '任务失败')
+    },
+  })
 
   useEffect(() => {
     if (projectId) {
@@ -88,9 +117,11 @@ export default function CharacterList() {
       }
 
       const res: any = await characterApi.extract(projectId, novelText)
-      const createdCount = res.data?.total || 0
-      message.success(`成功提取 ${createdCount} 个角色`)
-      fetchCharacters(projectId, { search: searchText })
+      const taskId = res.data?.task_id
+      if (taskId) {
+        taskProgress.startPolling(taskId)
+        message.info('提取角色任务已提交，可在任务中心查看进度')
+      }
     } catch (e: any) {
       message.error(e.response?.data?.detail || '提取失败')
     } finally {
@@ -110,13 +141,30 @@ export default function CharacterList() {
     }
   }
 
+  const handleSaveStateDescription = async (characterId: string, stateId: string) => {
+    if (!editingStateDescription || !projectId) return
+    try {
+      await characterApi.updateState(projectId, characterId, stateId, {
+        description: editingStateDescription.description,
+      })
+      message.success('状态描述更新成功')
+      setEditingStateDescription(null)
+      fetchCharacters(projectId, { search: searchText })
+    } catch (e: any) {
+      message.error(e.response?.data?.detail || '更新失败')
+    }
+  }
+
   const handleGenerateImage = async (record: Character) => {
     if (!projectId) return
     setGeneratingImage(record.id)
     try {
       const res: any = await characterApi.generateImage(projectId, record.id)
-      message.success(`角色「${res.data?.character_name}」形象生成成功`)
-      fetchCharacters(projectId, { search: searchText })
+      const taskId = res.data?.task_id
+      if (taskId) {
+        taskProgress.startPolling(taskId)
+        message.info('生成形象任务已提交，可在任务中心查看进度')
+      }
     } catch (e: any) {
       message.error(e.response?.data?.detail || '生成失败')
     } finally {
@@ -129,13 +177,11 @@ export default function CharacterList() {
     setGeneratingStateId(stateId)
     try {
       const res: any = await characterApi.generateStateImage(projectId, characterId, stateId)
-      const stateName = res.data?.state_name || ''
-      const imageUrl = res.data?.image_url || ''
-      setStateImageMap((prev) => ({
-        ...prev,
-        [characterId]: { ...(prev[characterId] || {}), [stateId]: imageUrl },
-      }))
-      message.success(`状态「${stateName}」形象生成成功`)
+      const taskId = res.data?.task_id
+      if (taskId) {
+        taskProgress.startPolling(taskId)
+        message.info('生成状态形象任务已提交，可在任务中心查看进度')
+      }
     } catch (e: any) {
       message.error(e.response?.data?.detail || '生成失败')
     } finally {
@@ -234,7 +280,7 @@ export default function CharacterList() {
               <Button
                 size="small"
                 icon={<EditOutlined />}
-                onClick={() => setEditingDescription({ id: record.id, description: record.description })}
+                onClick={() => setEditingDescription({ id: record.id, description: record.description || '' })}
                 style={{ marginTop: 8 }}
               >
                 编辑描述
@@ -316,12 +362,12 @@ export default function CharacterList() {
             expandable={{
               rowExpandable: (record: Character) => !!(record.states && record.states.length > 0),
               expandedRowRender: (record: Character) => {
-                const charStateImages = stateImageMap[record.id] || {}
                 return (
                   <div style={{ padding: '8px 0' }}>
                     <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 13, color: '#555' }}>角色状态（年龄/身份阶段）</div>
                     {record.states?.map((s) => {
-                      const stateImgUrl = s.image_url || charStateImages[s.id]
+                      const stateImgUrl = s.image_url
+                      const isEditingState = editingStateDescription?.stateId === s.id
                       return (
                         <Card key={s.id} size="small" style={{ marginBottom: 8, background: '#fafafa' }}>
                           <Space direction="vertical" size={2} style={{ width: '100%' }}>
@@ -341,19 +387,64 @@ export default function CharacterList() {
                                 />
                               </div>
                             )}
-                            {s.description && (
-                              <div style={{ fontSize: 12, color: '#666', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
-                                {s.description}
+                            {isEditingState ? (
+                              <div style={{ width: '100%' }}>
+                                <TextArea
+                                  rows={3}
+                                  value={editingStateDescription.description}
+                                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
+                                    setEditingStateDescription({
+                                      ...editingStateDescription,
+                                      description: e.target.value,
+                                    })
+                                  }
+                                  style={{ marginBottom: 8 }}
+                                />
+                                <Space>
+                                  <Button
+                                    size="small"
+                                    icon={<SaveOutlined />}
+                                    onClick={() => handleSaveStateDescription(record.id, s.id)}
+                                  >
+                                    保存
+                                  </Button>
+                                  <Button size="small" onClick={() => setEditingStateDescription(null)}>
+                                    取消
+                                  </Button>
+                                </Space>
+                              </div>
+                            ) : (
+                              <div style={{ width: '100%' }}>
+                                {s.description && (
+                                  <div style={{ fontSize: 12, color: '#666', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                                    {s.description}
+                                  </div>
+                                )}
+                                <Space style={{ marginTop: 8 }} size={8}>
+                                  <Button
+                                    size="small"
+                                    icon={<EditOutlined />}
+                                    onClick={() =>
+                                      setEditingStateDescription({
+                                        characterId: record.id,
+                                        stateId: s.id,
+                                        description: s.description || '',
+                                      })
+                                    }
+                                  >
+                                    编辑描述
+                                  </Button>
+                                  <Button
+                                    size="small"
+                                    icon={<PictureOutlined />}
+                                    loading={generatingStateId === s.id}
+                                    onClick={() => handleGenerateStateImage(record.id, s.id)}
+                                  >
+                                    生成形象
+                                  </Button>
+                                </Space>
                               </div>
                             )}
-                            <Button
-                              size="small"
-                              icon={<PictureOutlined />}
-                              loading={generatingStateId === s.id}
-                              onClick={() => handleGenerateStateImage(record.id, s.id)}
-                            >
-                              生成形象
-                            </Button>
                           </Space>
                         </Card>
                       )

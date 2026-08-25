@@ -10,6 +10,29 @@ import type { LLMConfig, ImageModelConfig, ModelPreset, ModelLog } from './compo
 
 const { Title } = Typography
 
+/**
+ * 规范化模型名称：统一走 litellm 的 provider 前缀格式。
+ * - 已含 provider 前缀（如 "deepseek/deepseek-chat"）→ 原样保留
+ * - 无前缀（如 "gpt-4o"）→ 自动加 "openai/"（自定义 OpenAI 兼容端点）
+ * 返回空串表示非法（调用方需提示）。
+ */
+function normalizeModelName(name: string): string {
+  const trimmed = (name || '').trim()
+  if (!trimmed) return ''
+  if (trimmed.includes('/')) return trimmed
+  return `openai/${trimmed}`
+}
+
+/** 模型名称基础校验：非空、无空白字符、前缀格式合法 */
+function validateModelName(name: string): string | null {
+  const normalized = normalizeModelName(name)
+  if (!normalized) return '请输入模型名称'
+  if (/\s/.test(normalized)) return '模型名称不能包含空白字符'
+  const [provider, model] = normalized.split('/')
+  if (!provider || !model) return '模型名称格式应为 provider/模型名（如 openai/gpt-4o）'
+  return null
+}
+
 export default function ModelCenter() {
   // LLM state
   const [llmConfig, setLlmConfig] = useState<LLMConfig | null>(null)
@@ -64,9 +87,17 @@ export default function ModelCenter() {
   }, [llmForm])
 
   const handleSaveLLM = async (values: LLMConfig) => {
+    // 模型名规范化：无前缀自动加 openai/，带前缀保留
+    const modelName = values.model_name || ''
+    const modelErr = validateModelName(modelName)
+    if (modelErr) {
+      message.error(modelErr)
+      return
+    }
+    const payload: LLMConfig = { ...values, model_name: normalizeModelName(modelName) }
     setLlmSaveLoading(true)
     try {
-      await modelApi.updateLLMConfig(values)
+      await modelApi.updateLLMConfig(payload)
       message.success('LLM 配置已保存')
       setEditingLlm(false)
       fetchLLMConfig()
@@ -112,9 +143,17 @@ export default function ModelCenter() {
   }, [imgForm])
 
   const handleSaveImageModel = async (values: ImageModelConfig) => {
+    // 模型名规范化：无前缀自动加 openai/，带前缀保留
+    const modelName = values.model_name || ''
+    const modelErr = validateModelName(modelName)
+    if (modelErr) {
+      message.error(modelErr)
+      return
+    }
+    const payload: ImageModelConfig = { ...values, model_name: normalizeModelName(modelName) }
     setImgSaveLoading(true)
     try {
-      await modelApi.updateImageModelConfig(values)
+      await modelApi.updateImageModelConfig(payload)
       message.success('生图模型配置已保存')
       setEditingImg(false)
       fetchImageModelConfig()

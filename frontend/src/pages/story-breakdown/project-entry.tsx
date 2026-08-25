@@ -1,94 +1,40 @@
 import { useEffect, useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import {
-  Card, Row, Col, Spin, Typography, Input, Space, Empty,
-} from 'antd'
-import { SearchOutlined, FileTextOutlined, RightOutlined } from '@ant-design/icons'
+import { useParams } from 'react-router-dom'
+import { Spin, Empty } from 'antd'
 import { novelApi } from '../../api/novelApi'
-import type { Novel } from '../../types/novel'
+import StoryBreakdownDetail from './detail'
 
-const { Title, Text } = Typography
-
+/**
+ * 剧情拆解（项目级入口，不再经过小说选择过渡页）。
+ * 每项目仅允许一本小说：自动获取该项目的小说，直接进入剧情拆解详情。
+ */
 export default function ProjectStoryBreakdown() {
   const { id: projectId } = useParams<{ id: string }>()
-  const navigate = useNavigate()
-  const [novels, setNovels] = useState<Novel[]>([])
+  const [novelId, setNovelId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
-  const [searchText, setSearchText] = useState('')
 
   useEffect(() => {
     if (!projectId) return
     setLoading(true)
     novelApi.list(projectId).then((res: any) => {
-      setNovels(res.data?.items || [])
+      const items = res.data?.items || []
+      setNovelId(items[0]?.id || null)
     }).catch(() => {
-      setNovels([])
+      setNovelId(null)
     }).finally(() => setLoading(false))
   }, [projectId])
 
-  const filteredNovels = novels.filter((n) =>
-    !searchText || n.title.toLowerCase().includes(searchText.toLowerCase())
-  )
-
-  const handleEnterBreakdown = (novelId: string) => {
-    navigate(`/projects/${projectId}/novels/${novelId}/story-breakdown`)
+  if (!projectId) {
+    return <Empty description="请先选择一个项目" />
   }
 
-  return (
-    <div>
-      <div style={{ marginBottom: 24 }}>
-        <Title level={4} style={{ margin: 0 }}>脚本生成</Title>
-        <Text type="secondary">选择一个小说，进入剧情拆解页面</Text>
-      </div>
+  if (loading) {
+    return <Spin style={{ display: 'block', margin: '60px auto' }} tip="加载小说..." />
+  }
 
-      {loading ? (
-        <Spin style={{ display: 'block', margin: '60px auto' }} tip="加载小说列表..." />
-      ) : filteredNovels.length === 0 ? (
-        <Empty description={searchText ? '未找到匹配的小说' : '该项目暂无小说，请先导入'} />
-      ) : (
-        <Card
-          size="small"
-          extra={
-            <Input
-              size="small"
-              placeholder="搜索小说..."
-              prefix={<SearchOutlined />}
-              value={searchText}
-              onChange={(e) => setSearchText(e.target.value)}
-              style={{ width: 200 }}
-              allowClear
-            />
-          }
-        >
-          <Row gutter={[12, 12]}>
-            {filteredNovels.map((novel) => (
-              <Col span={12} key={novel.id}>
-                <Card
-                  size="small"
-                  hoverable
-                  onClick={() => handleEnterBreakdown(novel.id)}
-                  styles={{ body: { padding: '14px 16px' } }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <Space>
-                      <FileTextOutlined style={{ fontSize: 18, color: '#1677ff' }} />
-                      <div>
-                        <Text strong style={{ fontSize: 14 }}>{novel.title}</Text>
-                        <div>
-                          <Text type="secondary" style={{ fontSize: 12 }}>
-                            {novel.word_count} 字 · {novel.format}
-                          </Text>
-                        </div>
-                      </div>
-                    </Space>
-                    <RightOutlined style={{ color: '#bbb' }} />
-                  </div>
-                </Card>
-              </Col>
-            ))}
-          </Row>
-        </Card>
-      )}
-    </div>
-  )
+  if (!novelId) {
+    return <Empty description="该项目暂无小说，请先导入小说" />
+  }
+
+  return <StoryBreakdownDetail projectId={projectId} novelId={novelId} />
 }

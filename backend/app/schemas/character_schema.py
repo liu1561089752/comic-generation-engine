@@ -18,6 +18,14 @@ class CharacterUpdate(BaseModel):
     role_type: Optional[str] = None
 
 
+class CharacterStateUpdate(BaseModel):
+    """更新角色状态（年龄/身份阶段）的字段"""
+    name: Optional[str] = None
+    aliases: Optional[str] = None
+    description: Optional[str] = None
+    sort_order: Optional[str] = None
+
+
 class CharacterResponse(BaseModel):
     id: UUID
     project_id: UUID

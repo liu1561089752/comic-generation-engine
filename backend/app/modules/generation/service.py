@@ -15,7 +15,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.database import async_session_factory
-from app.infra.adapters.grsai_api_adapter import GRSaiAPIAdapter
+from app.infra.adapters.image_gen_adapter import ImageGenAdapter
 from app.infra.adapters.http_client import HttpClientManager
 from app.infra.file_utils import read_bytes, write_bytes_atomic, makedirs, rmtree, remove_file
 from app.infra.task_progress import TaskProgressTracker
@@ -207,7 +207,7 @@ class GenerationService:
             if base64_images:
                 params["images"] = base64_images
 
-            image_gen = GRSaiAPIAdapter()
+            image_gen = ImageGenAdapter()
             gen_result = await image_gen.generate(full_prompt, params=params)
             image_url = gen_result.get("image_url", "")
             if not image_url:
@@ -366,7 +366,7 @@ class GenerationService:
                     image_url = ""
                     for img_attempt in range(max_gen_retries):
                         try:
-                            image_gen = GRSaiAPIAdapter(max_retries=1, request_timeout=180)
+                            image_gen = ImageGenAdapter(max_retries=1, request_timeout=180)
                             gen_result = await image_gen.generate(full_prompt, params=params)
                             image_url = gen_result.get("image_url", "")
                             break  # 成功，退出重试循环

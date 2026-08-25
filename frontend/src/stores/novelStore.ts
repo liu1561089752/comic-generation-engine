@@ -42,7 +42,7 @@ interface NovelState {
   // 小说操作
   fetchNovels: (projectId: string) => Promise<void>
   fetchNovel: (projectId: string, novelId: string) => Promise<void>
-  uploadNovel: (projectId: string, file: File, title?: string) => Promise<void>
+  uploadNovel: (projectId: string, file: File, title?: string) => Promise<Novel>
   preprocessNovel: (projectId: string, novelId: string) => Promise<void>
   updateNovelText: (projectId: string, novelId: string, raw_text: string) => Promise<any>
   fetchChapters: (projectId: string, novelId: string) => Promise<void>

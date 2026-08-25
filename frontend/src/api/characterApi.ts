@@ -1,6 +1,6 @@
 import apiClient from './client'
 import type { ApiResponse } from '../types'
-import type { Character, CharacterRelation, CharacterOutfit, CharacterExpression } from '../types/character'
+import type { Character, CharacterState, CharacterRelation, CharacterOutfit, CharacterExpression } from '../types/character'
 
 export interface CreateCharacterParams {
   name: string
@@ -11,6 +11,13 @@ export interface UpdateCharacterParams {
   aliases?: string
   description?: string
   role_type?: string
+}
+
+export interface UpdateCharacterStateParams {
+  name?: string
+  aliases?: string
+  description?: string
+  sort_order?: string
 }
 
 export interface CreateRelationParams {
@@ -62,13 +69,16 @@ export const characterApi = {
     apiClient.delete<ApiResponse<null>>(`/projects/${projectId}/characters/${characterId}`),
 
   extract: (projectId: string, novelText: string) =>
-    apiClient.post<ApiResponse<{ items: Character[]; total: number }>>(`/projects/${projectId}/characters/extract`, { novel_text: novelText }),
+    apiClient.post<ApiResponse<{ task_id: string }>>(`/projects/${projectId}/characters/extract`, { novel_text: novelText }),
 
   generateImage: (projectId: string, characterId: string) =>
-    apiClient.post<ApiResponse<{ image_url: string; character_name: string }>>(`/projects/${projectId}/characters/${characterId}/generate-image`),
+    apiClient.post<ApiResponse<{ task_id: string }>>(`/projects/${projectId}/characters/${characterId}/generate-image`),
 
   generateStateImage: (projectId: string, characterId: string, stateId: string) =>
-    apiClient.post<ApiResponse<{ image_url: string; state_name: string }>>(`/projects/${projectId}/characters/${characterId}/states/${stateId}/generate-image`),
+    apiClient.post<ApiResponse<{ task_id: string }>>(`/projects/${projectId}/characters/${characterId}/states/${stateId}/generate-image`),
+
+  updateState: (projectId: string, characterId: string, stateId: string, data: UpdateCharacterStateParams) =>
+    apiClient.put<ApiResponse<CharacterState>>(`/projects/${projectId}/characters/${characterId}/states/${stateId}`, data),
 
   listRelations: (projectId: string, characterId: string) =>
     apiClient.get<ApiResponse<CharacterRelation[]>>(`/projects/${projectId}/characters/${characterId}/relations`),

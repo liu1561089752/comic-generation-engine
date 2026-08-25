@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Button, Space, Table, Tag, Modal, Form, Input, Select, Image, message } from 'antd'
 import { EditOutlined, DeleteOutlined, PlusOutlined, PictureOutlined, SaveOutlined } from '@ant-design/icons'
 import { useWorldStore } from '../../../stores/worldStore'
+import { useMultiTaskProgress } from '../../../hooks/useMultiTaskProgress'
 import EmptyState from '../../../components/common/EmptyState'
 import { extractNovelText } from './extractNovelText'
 import type { Building } from '../../../types/world'
@@ -50,13 +51,35 @@ export default function BuildingTab({ projectId, worldId }: Props) {
   const [editingBuildingDescription, setEditingBuildingDescription] = useState<EditingDescription | null>(null)
   const [generatingBuildingImage, setGeneratingBuildingImage] = useState<string | null>(null)
 
+  // AI 任务进度（一键提取建筑 / 生成建筑图片 均纳入任务中心管理）
+  const taskProgress = useMultiTaskProgress({
+    projectId,
+    onTaskCompleted: (taskId) => {
+      const output = taskProgress.getTask(taskId)?.outputData
+      if (output?.total != null) {
+        message.success(`成功提取 ${output.total} 个建筑`)
+      } else if (output?.building_name) {
+        message.success(`建筑「${output.building_name}」图片生成成功`)
+      } else {
+        message.success('任务完成')
+      }
+      fetchBuildings(projectId, worldId)
+    },
+    onTaskFailed: (_taskId, error) => {
+      message.error(error || '任务失败')
+    },
+  })
+
   const handleExtractBuildings = async () => {
     setExtractBuildingLoading(true)
     try {
       const novelText = await extractNovelText(projectId)
       if (!novelText) return
-      await aiExtractBuildings(projectId, worldId, novelText)
-      fetchBuildings(projectId, worldId)
+      const taskId = await aiExtractBuildings(projectId, worldId, novelText)
+      if (taskId) {
+        taskProgress.startPolling(taskId)
+        message.info('提取建筑任务已提交，可在任务中心查看进度')
+      }
     } catch (e: any) {
       message.error(e.response?.data?.detail || '提取失败')
     } finally {
@@ -79,8 +102,11 @@ export default function BuildingTab({ projectId, worldId }: Props) {
   const handleGenerateBuildingImage = async (record: Building) => {
     setGeneratingBuildingImage(record.id)
     try {
-      await generateBuildingImage(projectId, worldId, record.id)
-      message.success(`建筑「${record.name}」图片生成成功`)
+      const taskId = await generateBuildingImage(projectId, worldId, record.id)
+      if (taskId) {
+        taskProgress.startPolling(taskId)
+        message.info('生成图片任务已提交，可在任务中心查看进度')
+      }
     } catch (e: any) {
       message.error(e.response?.data?.detail || '生成失败')
     } finally {

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Button, Space, Table, Tag, Modal, Form, Input, Select, Image, message } from 'antd'
 import { EditOutlined, DeleteOutlined, PlusOutlined, PictureOutlined, SaveOutlined } from '@ant-design/icons'
 import { useWorldStore } from '../../../stores/worldStore'
+import { useMultiTaskProgress } from '../../../hooks/useMultiTaskProgress'
 import EmptyState from '../../../components/common/EmptyState'
 import { extractNovelText } from './extractNovelText'
 import type { Outfit } from '../../../types/world'
@@ -44,13 +45,35 @@ export default function OutfitTab({ projectId, worldId }: Props) {
   const [editingOutfitDescription, setEditingOutfitDescription] = useState<EditingDescription | null>(null)
   const [generatingOutfitImage, setGeneratingOutfitImage] = useState<string | null>(null)
 
+  // AI 任务进度（一键提取服装 / 生成服装图片 均纳入任务中心管理）
+  const taskProgress = useMultiTaskProgress({
+    projectId,
+    onTaskCompleted: (taskId) => {
+      const output = taskProgress.getTask(taskId)?.outputData
+      if (output?.total != null) {
+        message.success(`成功提取 ${output.total} 个服装`)
+      } else if (output?.outfit_name) {
+        message.success(`服装「${output.outfit_name}」图片生成成功`)
+      } else {
+        message.success('任务完成')
+      }
+      fetchOutfits(projectId, worldId)
+    },
+    onTaskFailed: (_taskId, error) => {
+      message.error(error || '任务失败')
+    },
+  })
+
   const handleExtractOutfits = async () => {
     setExtractOutfitLoading(true)
     try {
       const novelText = await extractNovelText(projectId)
       if (!novelText) return
-      await aiExtractOutfits(projectId, worldId, novelText)
-      fetchOutfits(projectId, worldId)
+      const taskId = await aiExtractOutfits(projectId, worldId, novelText)
+      if (taskId) {
+        taskProgress.startPolling(taskId)
+        message.info('提取服装任务已提交，可在任务中心查看进度')
+      }
     } catch (e: any) {
       message.error(e.response?.data?.detail || '提取失败')
     } finally {
@@ -73,8 +96,11 @@ export default function OutfitTab({ projectId, worldId }: Props) {
   const handleGenerateOutfitImage = async (record: Outfit) => {
     setGeneratingOutfitImage(record.id)
     try {
-      await generateOutfitImage(projectId, worldId, record.id)
-      message.success(`服装「${record.name}」图片生成成功`)
+      const taskId = await generateOutfitImage(projectId, worldId, record.id)
+      if (taskId) {
+        taskProgress.startPolling(taskId)
+        message.info('生成图片任务已提交，可在任务中心查看进度')
+      }
     } catch (e: any) {
       message.error(e.response?.data?.detail || '生成失败')
     } finally {

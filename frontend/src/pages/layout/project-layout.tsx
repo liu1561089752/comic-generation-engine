@@ -7,9 +7,6 @@ import {
   message,
   Spin,
   Empty,
-  Card,
-  Row,
-  Col,
   Tag,
   Modal,
 } from 'antd'
@@ -17,8 +14,6 @@ import {
   ArrowLeftOutlined,
   ThunderboltOutlined,
   SaveOutlined,
-  FileTextOutlined,
-  RightOutlined,
   DeleteOutlined,
 } from '@ant-design/icons'
 import { usePipelineStore } from '../../stores/pipelineStore'
@@ -26,7 +21,6 @@ import { novelApi } from '../../api/novelApi'
 import { useAutoSave, useBeforeUnload } from '../../hooks/useAutoSave'
 import { useTaskProgress } from '../../hooks/useTaskProgress'
 import { TaskProgressBar } from '../../components/common/TaskProgressBar'
-import type { Novel } from '../../types/novel'
 
 const { Title, Text } = Typography
 
@@ -37,7 +31,6 @@ function LayoutDetail({ projectId, novelId }: { projectId: string; novelId: stri
     layoutData,
     layoutLoading,
     layoutGenerating,
-    generationTask,
     fetchLayout,
     generateLayout,
     saveLayout,
@@ -376,62 +369,34 @@ function LayoutDetail({ projectId, novelId }: { projectId: string; novelId: stri
   )
 }
 
-/** 小说选择器 */
-function LayoutNovelSelector({ projectId }: { projectId: string }) {
-  const navigate = useNavigate()
-  const [novels, setNovels] = useState<Novel[]>([])
+export default function ProjectLayoutPage() {
+  const { id: projectId } = useParams<{ id: string }>()
+  const [novelId, setNovelId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
+  // 每项目仅允许一本小说：自动获取项目小说，直接进入排版详情（不再经过小说选择过渡页）
   useEffect(() => {
+    if (!projectId) return
     setLoading(true)
     novelApi.list(projectId).then((res: any) => {
-      setNovels(res.data?.items || [])
-    }).catch(() => setNovels([])).finally(() => setLoading(false))
+      const items = res.data?.items || []
+      setNovelId(items[0]?.id || null)
+    }).catch(() => {
+      setNovelId(null)
+    }).finally(() => setLoading(false))
   }, [projectId])
 
-  return (
-    <div>
-      <div style={{ marginBottom: 24 }}>
-        <Space>
-          <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>
-          <Title level={4} style={{ margin: 0 }}>AI排版</Title>
-        </Space>
-      </div>
-      {loading ? (
-        <Spin style={{ display: 'block', margin: '60px auto' }} />
-      ) : novels.length === 0 ? (
-        <Empty description="请先导入小说并生成脚本" />
-      ) : (
-        <Card size="small" title="选择小说">
-          <Row gutter={[12, 12]}>
-            {novels.map((novel) => (
-              <Col span={12} key={novel.id}>
-                <Card size="small" hoverable
-                  onClick={() => navigate(`/projects/${projectId}/novels/${novel.id}/layout`)}
-                  styles={{ body: { padding: '14px 16px' } }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <Space>
-                      <FileTextOutlined style={{ fontSize: 18, color: '#1677ff' }} />
-                      <div>
-                        <Text strong style={{ fontSize: 14 }}>{novel.title}</Text>
-                        <div><Text type="secondary" style={{ fontSize: 12 }}>{novel.word_count} 字</Text></div>
-                      </div>
-                    </Space>
-                    <RightOutlined style={{ color: '#bbb' }} />
-                  </div>
-                </Card>
-              </Col>
-            ))}
-          </Row>
-        </Card>
-      )}
-    </div>
-  )
-}
+  if (!projectId) {
+    return <Empty description="请先选择一个项目" />
+  }
 
-export default function ProjectLayoutPage() {
-  const { id: projectId, novelId } = useParams<{ id: string; novelId: string }>()
-  if (projectId && novelId) return <LayoutDetail projectId={projectId} novelId={novelId} />
-  return <LayoutNovelSelector projectId={projectId!} />
+  if (loading) {
+    return <Spin style={{ display: 'block', margin: '60px auto' }} tip="加载小说..." />
+  }
+
+  if (!novelId) {
+    return <Empty description="该项目暂无小说，请先导入小说并生成脚本" />
+  }
+
+  return <LayoutDetail projectId={projectId} novelId={novelId} />
 }

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.repositories.base import BaseRepository
 from app.models.novel import Project, Novel, Chapter, Paragraph, EditorVersion
 from app.models.task import Task
+from app.models.world import WorldBuilding, SceneAsset
 
 
 class ProjectRepository(BaseRepository[Project]):
@@ -78,7 +79,6 @@ class ProjectRepository(BaseRepository[Project]):
 
     async def get_production_progress(self, project_id: UUID) -> dict:
         """获取项目生产进度统计"""
-        # Scene/Panel/Page/Image 模型已删除，仅保留任务统计
         results = {}
 
         # 任务统计
@@ -93,8 +93,22 @@ class ProjectRepository(BaseRepository[Project]):
             task_counts["total"] += count
         results["tasks"] = task_counts
 
-        # Scene/Panel/Image/Page 统计 - 模型已删除，返回 0
-        results["total_scenes"] = 0
+        # 场景图片个数：世界观场景资产中已生成图片的数量
+        # （与生产进度"世界观构建"的口径一致：image_url 非空视为已生成）
+        scene_img_count = (
+            await self.session.execute(
+                select(func.count(SceneAsset.id)).where(
+                    SceneAsset.world_id.in_(
+                        select(WorldBuilding.id).where(WorldBuilding.project_id == project_id)
+                    ),
+                    SceneAsset.image_url.isnot(None),
+                    SceneAsset.image_url != "",
+                )
+            )
+        ).scalar() or 0
+        results["total_scenes"] = scene_img_count
+
+        # 以下统计基于已删除的旧模型，返回 0
         results["total_panels"] = 0
         results["total_images"] = 0
         results["total_pages"] = 0

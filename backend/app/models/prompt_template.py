@@ -36,8 +36,6 @@ PROMPT_MODULE_DEFS = [
     {"key": "camera_system",               "label": "镜头系统",       "category": "internal"},
     {"key": "layout_system",               "label": "排版系统",       "category": "internal"},
     {"key": "bubble_system",               "label": "气泡系统",       "category": "internal"},
-    # 校对类
-    {"key": "proofread_prompts",           "label": "生图提示词校对", "category": "internal"},
 ]
 
 

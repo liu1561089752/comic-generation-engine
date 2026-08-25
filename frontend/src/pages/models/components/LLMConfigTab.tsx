@@ -98,13 +98,13 @@ export default function LLMConfigTab({
               help={
                 <>
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    中转站用户请在名称前加上 provider 前缀，例如：<Text code>openai/gpt-4o</Text>、<Text code>deepseek/deepseek-chat</Text>、<Text code>qwen/qwen-plus</Text>。
-                    直接使用官方 API 则无需前缀（如 <Text code>gpt-4o</Text>）。
+                    保存时自动规范化为 provider 前缀格式：未带前缀的名称会自动补 <Text code>openai/</Text> 前缀（适配自定义 OpenAI 兼容端点）；
+                    已有前缀则保留，如 <Text code>deepseek/deepseek-chat</Text>、<Text code>qwen/qwen-plus</Text>。
                   </Text>
                 </>
               }
             >
-              <Input placeholder="openai/gpt-4o 或 gpt-4o" style={{ width: '100%' }} />
+              <Input placeholder="openai/gpt-4o 或直接填 gpt-4o" style={{ width: '100%' }} />
             </Form.Item>
             <Form.Item
               name="api_base"

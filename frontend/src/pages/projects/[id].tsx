@@ -13,6 +13,18 @@ import type { ProductionStage } from '../../types/project'
 
 const { Title, Text } = Typography
 
+/** 8 工序 stage key → 功能模块路径映射（后端返回的 stage 字段 → 前端跳转路径） */
+const STAGE_PATH_MAP: Record<string, string> = {
+  novel_import: 'novels',
+  character_design: 'characters',
+  world_building: 'worlds',
+  script_generation: 'story-breakdown',
+  storyboard: 'storyboard',
+  layout: 'layout',
+  image_generation: 'generation',
+  export: 'export',
+}
+
 /** 默认生产阶段定义（当 API 未返回 production_progress 时使用） */
 const DEFAULT_STAGES: ProductionStage[] = [
   { key: 'novel_import', label: '小说导入', status: 'pending', path: 'novels' },
@@ -22,7 +34,6 @@ const DEFAULT_STAGES: ProductionStage[] = [
   { key: 'storyboard', label: '分镜设计', status: 'pending', path: 'storyboard' },
   { key: 'layout', label: 'AI排版', status: 'pending', path: 'layout' },
   { key: 'illustration_generation', label: '画面生成', status: 'pending', path: 'generation' },
-  { key: 'quality_check', label: '质量检查', status: 'pending', path: 'quality' },
   { key: 'export', label: '导出', status: 'pending', path: 'export' },
 ]
 
@@ -145,12 +156,20 @@ export default function ProjectDetail() {
 
   const project = currentProject
 
-  // 生产进度阶段：优先从 API 返回的数据获取，否则根据项目状态推导
+  // 生产进度阶段：优先从 API 返回的 8 工序数据（后端字段 stage/name/status → 前端 key/label/status/path），
+  // 否则根据项目状态本地推导
+  const rawStages: any[] = project?.production_progress?.stages || []
   const productionStages: ProductionStage[] =
-    project?.production_progress?.stages?.length
-      ? project.production_progress.stages
+    rawStages.length > 0
+      ? rawStages.map((s) => ({
+          key: s.stage,
+          label: s.name,
+          status: s.status,
+          path: STAGE_PATH_MAP[s.stage],
+        }))
       : deriveStageStatuses(project?.status || 'draft')
 
+  // 完成度：优先用后端计算的整体进度（与工作台生产进度概览同一套算法：完成的工序数 / 8）
   const overallProgress =
     project?.production_progress?.overall_progress ?? calcOverallProgress(productionStages)
 
@@ -158,10 +177,7 @@ export default function ProjectDetail() {
     { key: 'novels', label: '📖 小说管理', desc: '导入和管理小说源文件', path: `/projects/${id}/novels` },
     { key: 'characters', label: '👥 人物IP', desc: '管理角色设定和关系', path: `/projects/${id}/characters` },
     { key: 'worlds', label: '🌍 世界观', desc: '构建世界背景和资产库', path: `/projects/${id}/worlds` },
-    { key: 'style-templates', label: '🎨 风格模板', desc: '配置绘画风格', path: `/projects/${id}/style-templates` },
-    { key: 'editor', label: '✏️ 漫画编辑器', desc: '编辑漫画页面布局', path: `/projects/${id}/editor` },
     { key: 'export', label: '📤 导出中心', desc: '导出为长图/PNG/JPG', path: `/projects/${id}/export` },
-    { key: 'quality', label: '✅ 质量控制', desc: '图片一致性检测和质量评分', path: `/projects/${id}/quality` },
   ]
 
   return (
@@ -230,7 +246,7 @@ export default function ProjectDetail() {
         </Col>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="场景" value={stats.scenes} suffix="个" />
+            <Statistic title="场景" value={project?.production_progress?.total_scenes ?? stats.scenes} suffix="个" />
           </Card>
         </Col>
         <Col span={6}>

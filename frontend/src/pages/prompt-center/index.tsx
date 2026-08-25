@@ -6,7 +6,7 @@ import {
 import {
   PlusOutlined, EditOutlined, DeleteOutlined, CheckCircleFilled,
   CopyOutlined, ThunderboltOutlined, SaveOutlined, CloseOutlined,
-  FileTextOutlined, SettingOutlined,
+  FileTextOutlined,
 } from '@ant-design/icons'
 import apiClient from '../../api/client'
 

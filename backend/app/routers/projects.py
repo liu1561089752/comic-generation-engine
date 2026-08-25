@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.middleware.auth import get_current_user
 from app.repositories.novel_repo import ProjectRepository, NovelRepository, ChapterRepository
 from app.core.base_repository import BaseRepository
-from app.models.world import WorldBuilding, StyleTemplate
+from app.models.world import WorldBuilding
 from app.models.character import Character
 from app.schemas.common import ApiResponse
 from app.schemas.project_schema import (
@@ -19,6 +19,7 @@ from app.schemas.project_schema import (
     UpdateProjectRequest,
     DuplicateProjectRequest,
 )
+from app.routers.dashboard import _get_production_stages
 
 router = APIRouter()
 
@@ -143,6 +144,10 @@ async def get_project(
         raise HTTPException(status_code=404, detail="项目不存在")
     _check_project_owner(project, user_id)
     progress = await project_repo.get_production_progress(project_id)
+    # 8 工序生产进度（与工作台生产进度概览同一套算法）
+    stages = await _get_production_stages(db, project_id)
+    progress["stages"] = stages
+    progress["overall_progress"] = sum(s["weight"] for s in stages if s["completed"])
     data = _serialize_project(project)
     data["production_progress"] = progress
     return ApiResponse(data=data)
@@ -266,23 +271,6 @@ async def duplicate_project(
                 settings=w.settings,
             )
 
-    if data.copy_layout_templates:
-        style_repo = BaseRepository(StyleTemplate, db)
-        templates = await style_repo.list_all(project_id=project_id)
-        for t in templates:
-            await style_repo.create(
-                project_id=new_project.id,
-                name=t.name,
-                aspect_ratio=t.aspect_ratio,
-                width=t.width,
-                art_style=t.art_style,
-                coloring_style=t.coloring_style,
-                lineart_style=t.lineart_style,
-                lighting_style=t.lighting_style,
-                negative_prompt=t.negative_prompt,
-                is_default=t.is_default,
-            )
-
     if data.copy_characters:
         char_repo = BaseRepository(Character, db)
         chars = await char_repo.list_all(project_id=project_id)
@@ -300,8 +288,9 @@ async def duplicate_project(
     if data.copy_novel:
         novel_repo = NovelRepository(db)
         chapter_repo = ChapterRepository(db)
+        # 每项目仅允许一本小说：复制时只取源项目的第一本
         novels = await novel_repo.list_all(project_id=project_id)
-        for n in novels:
+        for n in novels[:1]:
             new_novel = await novel_repo.create(
                 project_id=new_project.id,
                 title=n.title,

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import {
   Button,
   Space,
@@ -28,8 +28,12 @@ import { TaskProgressBar } from '../../components/common/TaskProgressBar'
 const { Title, Text } = Typography
 const { TextArea } = Input
 
-export default function StoryBreakdownDetail() {
-  const { id: projectId, novelId } = useParams<{ id: string; novelId: string }>()
+interface StoryBreakdownDetailProps {
+  projectId: string
+  novelId: string
+}
+
+export default function StoryBreakdownDetail({ projectId, novelId }: StoryBreakdownDetailProps) {
   const navigate = useNavigate()
   const {
     scriptData,
@@ -41,7 +45,6 @@ export default function StoryBreakdownDetail() {
     saveScript,
     splitShot,
     deleteScript,
-    generationTask,
     updateGenerationTask,
   } = useScriptStore()
 

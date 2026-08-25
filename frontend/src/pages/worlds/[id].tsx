@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
 import {
   Button,
   Space,
@@ -15,7 +14,7 @@ import {
   Descriptions,
   Image,
 } from 'antd'
-import { ArrowLeftOutlined, EditOutlined, DeleteOutlined, GlobalOutlined } from '@ant-design/icons'
+import { EditOutlined, DeleteOutlined, GlobalOutlined } from '@ant-design/icons'
 import { useWorldStore } from '../../stores/worldStore'
 import EmptyState from '../../components/common/EmptyState'
 import Loading from '../../components/common/Loading'
@@ -24,10 +23,16 @@ import SceneAssetTab from './components/SceneAssetTab'
 import PropTab from './components/PropTab'
 import BuildingTab from './components/BuildingTab'
 import OutfitTab from './components/OutfitTab'
-import StyleTemplateTab from './components/StyleTemplateTab'
 
 const { Title } = Typography
 const { TextArea } = Input
+
+interface WorldDetailProps {
+  projectId: string
+  worldId: string
+  /** 世界观删除后回调（父页面刷新世界观列表） */
+  onDeleted?: () => void
+}
 
 const ERA_TYPE_OPTIONS = [
   { label: '古代', value: '古代' }, { label: '中世纪', value: '中世纪' },
@@ -44,10 +49,7 @@ const CIVILIZATION_OPTIONS = [
   { label: '星际', value: '星际' },
 ]
 
-export default function WorldDetail() {
-  const { id: projectId, worldId } = useParams<{ id: string; worldId: string }>()
-  const navigate = useNavigate()
-
+export default function WorldDetail({ projectId, worldId, onDeleted }: WorldDetailProps) {
   const {
     currentWorld,
     loading,
@@ -58,7 +60,6 @@ export default function WorldDetail() {
     fetchProps,
     fetchBuildings,
     fetchOutfits,
-    fetchTemplates,
   } = useWorldStore()
 
   const [editModalOpen, setEditModalOpen] = useState(false)
@@ -66,18 +67,14 @@ export default function WorldDetail() {
   const [editLoading, setEditLoading] = useState(false)
 
   useEffect(() => {
-    if (projectId && worldId) {
-      fetchWorld(projectId, worldId)
-      fetchSceneAssets(projectId, worldId)
-      fetchProps(projectId, worldId)
-      fetchBuildings(projectId, worldId)
-      fetchOutfits(projectId, worldId)
-      fetchTemplates(projectId)
-    }
+    fetchWorld(projectId, worldId)
+    fetchSceneAssets(projectId, worldId)
+    fetchProps(projectId, worldId)
+    fetchBuildings(projectId, worldId)
+    fetchOutfits(projectId, worldId)
   }, [projectId, worldId])
 
   const handleEdit = async (values: any) => {
-    if (!projectId || !worldId) return
     setEditLoading(true)
     try {
       await updateWorld(projectId, worldId, values)
@@ -92,7 +89,6 @@ export default function WorldDetail() {
   }
 
   const handleDelete = () => {
-    if (!projectId || !worldId) return
     Modal.confirm({
       title: '确认删除',
       content: '确定要删除该世界观吗？此操作不可恢复。',
@@ -103,7 +99,7 @@ export default function WorldDetail() {
         try {
           await deleteWorld(projectId, worldId)
           message.success('删除成功')
-          navigate(`/projects/${projectId}/worlds`)
+          onDeleted?.()
         } catch {
           message.error('删除失败')
         }
@@ -119,7 +115,7 @@ export default function WorldDetail() {
     return <EmptyState description="世界观不存在" />
   }
 
-  const tabItems = projectId && worldId ? [
+  const tabItems = [
     {
       key: 'scene-assets',
       label: '场景资产',
@@ -140,21 +136,10 @@ export default function WorldDetail() {
       label: '服装',
       children: <OutfitTab projectId={projectId} worldId={worldId} />,
     },
-    {
-      key: 'templates',
-      label: '风格模板',
-      children: <StyleTemplateTab projectId={projectId} />,
-    },
-  ] : []
+  ]
 
   return (
     <div>
-      <Space style={{ marginBottom: 16 }}>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(`/projects/${projectId}/worlds`)}>
-          返回
-        </Button>
-      </Space>
-
       <Card style={{ marginBottom: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Space>

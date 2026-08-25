@@ -13,7 +13,6 @@ from typing import List, Optional, Tuple
 from uuid import UUID
 
 import httpx
-from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.base_repository import BaseRepository
@@ -21,7 +20,7 @@ from app.core.config import settings
 from app.core.database import async_session_factory
 from app.core.llm_utils import parse_llm_json
 from app.infra.adapters.base_llm import ChatMessage
-from app.infra.adapters.grsai_api_adapter import GRSaiAPIAdapter
+from app.infra.adapters.image_gen_adapter import ImageGenAdapter
 from app.infra.adapters.llm_adapter import LLMAdapter
 from app.infra.file_utils import file_exists, makedirs, move_file, write_bytes_atomic
 from app.models.world import (
@@ -29,7 +28,6 @@ from app.models.world import (
     Outfit,
     Prop,
     SceneAsset,
-    StyleTemplate,
     WorldBuilding,
 )
 from app.schemas.world_schema import (
@@ -37,8 +35,6 @@ from app.schemas.world_schema import (
     OutfitCreate,
     PropCreate,
     SceneAssetCreate,
-    StyleTemplateCreate,
-    WorldBuildingCreate,
 )
 from app.infra.prompt_loader import get_prompt
 
@@ -68,14 +64,10 @@ class WorldService:
         self.prop_repo = BaseRepository(Prop, session)
         self.building_repo = BaseRepository(Building, session)
         self.outfit_repo = BaseRepository(Outfit, session)
-        self.template_repo = BaseRepository(StyleTemplate, session)
 
     # ==================================================================
     # 世界观 CRUD
     # ==================================================================
-
-    async def create_world(self, project_id: UUID, data: WorldBuildingCreate) -> WorldBuilding:
-        return await self.world_repo.create(project_id=project_id, **data.model_dump())
 
     async def get_world(self, world_id: UUID) -> Optional[WorldBuilding]:
         return await self.world_repo.get(world_id)
@@ -94,8 +86,15 @@ class WorldService:
     async def ai_create_world(self, project_id: UUID, novel_text: str) -> WorldBuilding:
         """调用 LLM 提取世界观设定并自动创建。
 
+        约束：一个项目只允许一个世界观；已存在世界观时拒绝再次创建。
+
         短事务模式：AI 调用期间不持有 DB session，避免连接池耗尽。
         """
+        # 校验：一个项目只允许一个世界观
+        existing = await self.world_repo.list_all(project_id=project_id)
+        if existing:
+            raise ValueError("该项目已存在世界观，每个项目仅允许创建一个世界观")
+
         # Step 1: AI call (no DB session held)
         llm = LLMAdapter(
             api_key=settings.LLM_API_KEY,
@@ -532,50 +531,6 @@ class WorldService:
         )
 
     # ==================================================================
-    # 风格模板 CRUD
-    # ==================================================================
-
-    async def create_template(self, project_id: UUID, data: StyleTemplateCreate) -> StyleTemplate:
-        # 如果设为默认，先清除其他默认模板
-        if data.is_default:
-            await self._clear_default_template(project_id)
-        return await self.template_repo.create(project_id=project_id, **data.model_dump())
-
-    async def list_templates(
-        self, project_id: UUID, skip: int = 0, limit: int = 20
-    ) -> Tuple[List[StyleTemplate], int]:
-        return await self.template_repo.list(project_id=project_id, skip=skip, limit=limit)
-
-    async def get_template(self, template_id: UUID) -> Optional[StyleTemplate]:
-        return await self.template_repo.get(template_id)
-
-    async def update_template(
-        self, project_id: UUID, template_id: UUID, data: dict
-    ) -> Optional[StyleTemplate]:
-        # 如果设为默认，先清除其他默认模板
-        if data.get("is_default"):
-            await self._clear_default_template(project_id)
-        return await self.template_repo.update(template_id, **data)
-
-    async def delete_template(self, template_id: UUID) -> bool:
-        return await self.template_repo.delete(template_id)
-
-    async def set_default_template(
-        self, project_id: UUID, template_id: UUID
-    ) -> Optional[StyleTemplate]:
-        """将指定模板设为默认，并清除其他默认模板"""
-        await self._clear_default_template(project_id)
-        return await self.template_repo.update(template_id, is_default=True)
-
-    async def _clear_default_template(self, project_id: UUID) -> None:
-        """清除项目下所有模板的默认标记（批量 UPDATE）"""
-        await self.session.execute(
-            sa_update(StyleTemplate)
-            .where(StyleTemplate.project_id == project_id, StyleTemplate.is_default == True)
-            .values(is_default=False)
-        )
-
-    # ==================================================================
     # 生图内部辅助（短事务模式）
     # ==================================================================
 
@@ -611,7 +566,7 @@ class WorldService:
             raise ValueError(empty_msg)
 
         # Step 2: AI call (no session held)
-        image_gen = GRSaiAPIAdapter()
+        image_gen = ImageGenAdapter()
         gen_result = await image_gen.generate(description, params={"aspectRatio": "16:9"})
         image_url = gen_result.get("image_url", "")
         local_path = ""

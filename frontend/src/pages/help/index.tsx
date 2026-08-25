@@ -12,8 +12,8 @@ const { Text, Title } = Typography
 // ---------- Changelog Data ----------
 
 const changelogData = [
-  { version: '1.0.0', date: '2026-06-15', items: ['正式版发布', '支持完整漫画生成流程', '集成 LLM 与生图模型管理', '新增资源中心与插件中心'] },
-  { version: '0.9.0', date: '2026-05-20', items: ['Beta 版发布', '新增质量控制模块', '优化 Prompt 生成逻辑'] },
+  { version: '1.0.0', date: '2026-06-15', items: ['正式版发布', '支持完整漫画生成流程', '集成 LLM 与生图模型管理', '新增插件中心'] },
+  { version: '0.9.0', date: '2026-05-20', items: ['Beta 版发布', '优化 Prompt 生成逻辑'] },
   { version: '0.8.0', date: '2026-04-10', items: ['Alpha 版发布', '基础功能：项目管理、角色创建、分镜编辑'] },
 ]
 
@@ -70,8 +70,7 @@ function TutorialTab() {
     { title: '4. 剧情拆解与分镜', description: '将小说拆解为剧情线，生成分镜草稿。' },
     { title: '5. Prompt 生成与优化', description: 'AI 自动生成生图 Prompt，可在 Prompt 中心编辑优化。' },
     { title: '6. 批量生图', description: '在生图中心配置参数，批量生成漫画画面。' },
-    { title: '7. 质量控制', description: '在质量控制模块审核图片质量，重新生成不合格的图片。' },
-    { title: '8. 导出成品', description: '在导出中心选择格式，导出完整漫画作品。' },
+    { title: '7. 导出成品', description: '在导出中心选择格式，导出完整漫画作品。' },
   ]
 
   return (

@@ -128,15 +128,3 @@ class TaskRepository(BaseRepository[Task]):
 
         result = await self.session.execute(query)
         return list(result.scalars().all()), total
-
-    async def get_queue_status(self) -> dict:
-        """获取各状态任务数量统计。
-
-        D50: 用单条 GROUP BY 查询替代 5 次 COUNT 往返。
-        """
-        statuses = ["queued", "running", "completed", "failed", "cancelled"]
-        result = await self.session.execute(
-            select(self.model.status, func.count()).group_by(self.model.status)
-        )
-        counts = {row[0]: row[1] for row in result}
-        return {s: counts.get(s, 0) for s in statuses}

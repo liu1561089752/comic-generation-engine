@@ -21,7 +21,6 @@ class DuplicateProjectRequest(BaseModel):
     copy_world_settings: bool = True
     copy_characters: bool = True
     copy_storyboard_templates: bool = True
-    copy_layout_templates: bool = True
     copy_prompt_templates: bool = True
     copy_novel: bool = False
     copy_images: bool = False

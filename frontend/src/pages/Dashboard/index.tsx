@@ -142,14 +142,6 @@ const STAT_CARD_CONFIGS: StatCardConfig[] = [
     link: '/projects',
   },
   {
-    title: '待审核图片数',
-    dataKey: 'pending_review_images',
-    icon: <EyeOutlined style={{ fontSize: 28, color: '#722ed1' }} />,
-    bgColor: '#f9f0ff',
-    borderColor: '#722ed1',
-    link: '/quality',
-  },
-  {
     title: '累计生图数',
     dataKey: 'total_generated_images',
     icon: <ThunderboltOutlined style={{ fontSize: 28, color: '#13c2c2' }} />,
@@ -190,7 +182,6 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchStats()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const fetchStats = async () => {

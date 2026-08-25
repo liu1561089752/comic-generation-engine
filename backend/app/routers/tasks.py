@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, desc, update as sa_update
+from sqlalchemy import select, func, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 
@@ -237,49 +237,6 @@ async def list_all_tasks(
         "page": page,
         "page_size": page_size,
     })
-
-
-@global_router.get("/queue")
-async def get_queue_kanban(
-    user_id: str = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """获取队列看板数据（按状态分组，仅当前用户项目的任务）"""
-    from app.models.novel import Project
-    repo = TaskRepository(db)
-
-    user_project_ids = select(Project.id).where(Project.user_id == user_id).scalar_subquery()
-
-    statuses = ["queued", "running", "completed", "failed"]
-    result = {}
-
-    for status in statuses:
-        query = select(Task).where(Task.status == status, Task.project_id.in_(user_project_ids))
-        count_query = select(func.count()).select_from(Task).where(Task.status == status, Task.project_id.in_(user_project_ids))
-        total_result = await db.execute(count_query)
-        total = total_result.scalar() or 0
-        query = query.order_by(Task.priority, desc(Task.created_at)).offset(0).limit(50)
-        rows = await db.execute(query)
-        tasks = list(rows.scalars().all())
-        result[status] = {
-            "items": [_task_to_dict(t) for t in tasks],
-            "total": total,
-        }
-
-    # 已取消的任务
-    cancelled_query = select(Task).where(Task.status == "cancelled", Task.project_id.in_(user_project_ids))
-    cancelled_count = select(func.count()).select_from(Task).where(Task.status == "cancelled", Task.project_id.in_(user_project_ids))
-    total_result = await db.execute(cancelled_count)
-    cancelled_total = total_result.scalar() or 0
-    cancelled_query = cancelled_query.order_by(desc(Task.created_at)).offset(0).limit(50)
-    rows = await db.execute(cancelled_query)
-    cancelled_tasks = list(rows.scalars().all())
-    result["cancelled"] = {
-        "items": [_task_to_dict(t) for t in cancelled_tasks],
-        "total": cancelled_total,
-    }
-
-    return ApiResponse(data=result)
 
 
 async def _check_task_belongs_to_user(task, user_id: str, db: AsyncSession):

@@ -6,27 +6,12 @@ import type {
   Prop,
   Building,
   Outfit,
-  StyleTemplate,
   PaginatedItems,
 } from '../types/world'
 
 // ======================================================================
 // 世界观 API
 // ======================================================================
-
-export interface CreateWorldParams {
-  name: string
-  era?: string
-  era_type?: string
-  time_span?: string
-  background?: string
-  core_tags?: string[]
-  region_style?: string
-  civilization_level?: string
-  description?: string
-  settings?: Record<string, unknown>
-  cover_image?: string
-}
 
 export interface UpdateWorldParams {
   name?: string
@@ -54,12 +39,6 @@ export const worldApi = {
       `/projects/${projectId}/worlds/${worldId}`,
     ),
 
-  create: (projectId: string, data: CreateWorldParams) =>
-    apiClient.post<ApiResponse<WorldBuilding>>(
-      `/projects/${projectId}/worlds`,
-      data,
-    ),
-
   update: (projectId: string, worldId: string, data: UpdateWorldParams) =>
     apiClient.put<ApiResponse<WorldBuilding>>(
       `/projects/${projectId}/worlds/${worldId}`,
@@ -72,13 +51,13 @@ export const worldApi = {
     ),
 
   aiAssist: (projectId: string, data: { novel_text: string }) =>
-    apiClient.post<ApiResponse<CreateWorldParams>>(
+    apiClient.post<ApiResponse<any>>(
       `/projects/${projectId}/worlds/ai-assist`,
       data,
     ),
 
   aiCreate: (projectId: string, data: { novel_text: string }) =>
-    apiClient.post<ApiResponse<WorldBuilding>>(
+    apiClient.post<ApiResponse<{ task_id: string }>>(
       `/projects/${projectId}/worlds/ai-create`,
       data,
     ),
@@ -128,22 +107,22 @@ export const sceneAssetApi = {
     ),
 
   aiExtract: (projectId: string, worldId: string, data: { novel_text: string }) =>
-    apiClient.post<ApiResponse<PaginatedItems<SceneAsset>>>(
+    apiClient.post<ApiResponse<{ task_id: string }>>(
       `/projects/${projectId}/worlds/${worldId}/scene-assets/ai-extract`,
       data,
     ),
   aiExtractProps: (projectId: string, worldId: string, data: { novel_text: string }) =>
-    apiClient.post<ApiResponse<PaginatedItems<Prop>>>(
+    apiClient.post<ApiResponse<{ task_id: string }>>(
       `/projects/${projectId}/worlds/${worldId}/props/ai-extract`,
       data,
     ),
   aiExtractBuildings: (projectId: string, worldId: string, data: { novel_text: string }) =>
-    apiClient.post<ApiResponse<PaginatedItems<Building>>>(
+    apiClient.post<ApiResponse<{ task_id: string }>>(
       `/projects/${projectId}/worlds/${worldId}/buildings/ai-extract`,
       data,
     ),
   aiExtractOutfits: (projectId: string, worldId: string, data: { novel_text: string }) =>
-    apiClient.post<ApiResponse<PaginatedItems<Outfit>>>(
+    apiClient.post<ApiResponse<{ task_id: string }>>(
       `/projects/${projectId}/worlds/${worldId}/outfits/ai-extract`,
       data,
     ),
@@ -284,67 +263,5 @@ export const outfitApi = {
   generateImage: (projectId: string, worldId: string, outfitId: string) =>
     apiClient.post<ApiResponse<{ image_url: string }>>(
       `/projects/${projectId}/worlds/${worldId}/outfits/${outfitId}/generate-image`,
-    ),
-}
-
-// ======================================================================
-// 风格模板 API
-// ======================================================================
-
-export interface CreateTemplateParams {
-  name: string
-  aspect_ratio?: string
-  width?: number
-  art_style?: string
-  coloring_style?: string
-  lineart_style?: string
-  lighting_style?: string
-  negative_prompt?: string
-  is_default?: boolean
-}
-
-export interface UpdateTemplateParams {
-  name?: string
-  aspect_ratio?: string
-  width?: number
-  art_style?: string
-  coloring_style?: string
-  lineart_style?: string
-  lighting_style?: string
-  negative_prompt?: string
-  is_default?: boolean
-}
-
-export const templateApi = {
-  list: (projectId: string) =>
-    apiClient.get<ApiResponse<PaginatedItems<StyleTemplate>>>(
-      `/projects/${projectId}/style-templates`,
-    ),
-
-  getById: (projectId: string, templateId: string) =>
-    apiClient.get<ApiResponse<StyleTemplate>>(
-      `/projects/${projectId}/style-templates/${templateId}`,
-    ),
-
-  create: (projectId: string, data: CreateTemplateParams) =>
-    apiClient.post<ApiResponse<StyleTemplate>>(
-      `/projects/${projectId}/style-templates`,
-      data,
-    ),
-
-  update: (projectId: string, templateId: string, data: UpdateTemplateParams) =>
-    apiClient.put<ApiResponse<StyleTemplate>>(
-      `/projects/${projectId}/style-templates/${templateId}`,
-      data,
-    ),
-
-  delete: (projectId: string, templateId: string) =>
-    apiClient.delete<ApiResponse<null>>(
-      `/projects/${projectId}/style-templates/${templateId}`,
-    ),
-
-  setDefault: (projectId: string, templateId: string) =>
-    apiClient.post<ApiResponse<StyleTemplate>>(
-      `/projects/${projectId}/style-templates/${templateId}/set-default`,
     ),
 }
