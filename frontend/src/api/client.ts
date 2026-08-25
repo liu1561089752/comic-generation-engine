@@ -1,14 +1,14 @@
-import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios'
+import axios, { AxiosError, AxiosRequestConfig, InternalAxiosRequestConfig } from 'axios'
 import { useAuthStore } from '../stores/authStore'
 
-const apiClient = axios.create({
+const instance = axios.create({
   baseURL: '/api/v1',
   timeout: 3600000,
   headers: { 'Content-Type': 'application/json' },
 })
 
 // 请求拦截器：添加 JWT Token
-apiClient.interceptors.request.use((config) => {
+instance.interceptors.request.use((config) => {
   const token = localStorage.getItem('access_token')
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
@@ -57,7 +57,7 @@ interface RetryConfig extends InternalAxiosRequestConfig {
 }
 
 // 响应拦截器：统一错误处理 + 401 自动刷新
-apiClient.interceptors.response.use(
+instance.interceptors.response.use(
   (response) => response.data,
   async (error: AxiosError) => {
     const originalRequest = error.config as RetryConfig | undefined
@@ -67,7 +67,8 @@ apiClient.interceptors.response.use(
     if (status === 401 && originalRequest) {
       const url = originalRequest.url || ''
       // 登录接口的 401 表示凭证错误，既不刷新也不能清登录态（logout 会整页跳转冲掉页面的错误提示）
-      if (url.includes('/auth/login')) {
+      // 登出接口的 401 表示令牌已失效，同样跳过刷新，否则会形成 刷新→登出→再登出 的循环
+      if (url.includes('/auth/login') || url.includes('/auth/logout')) {
         return Promise.reject(error)
       }
       // /auth/refresh 自身失败不重试，避免死循环
@@ -76,7 +77,7 @@ apiClient.interceptors.response.use(
           const newToken = await refreshAccessToken()
           originalRequest._retried = true
           originalRequest.headers!.Authorization = `Bearer ${newToken}`
-          return apiClient(originalRequest)
+          return instance(originalRequest)
         } catch {
           // 刷新失败：清理登录态，跳转登录页；reject 原始 401 以保留服务端 detail
           useAuthStore.getState().logout()
@@ -94,4 +95,19 @@ apiClient.interceptors.response.use(
   }
 )
 
-export default apiClient
+/**
+ * 类型化 API Client。
+ *
+ * 响应拦截器已在运行时把 AxiosResponse 解包为 response.data（即 ApiResponse<T>），
+ * 因此这里把请求方法类型声明为 Promise<T>，与运行时行为一致——
+ * 调用方 `const res = await apiClient.get<ApiResponse<X>>(url)` 后
+ * `res.data` 即为 X（类型安全），消灭大量 "Property 'items' does not exist" 类错误。
+ */
+interface ApiClient {
+  get<T = any>(url: string, config?: AxiosRequestConfig): Promise<T>
+  post<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<T>
+  put<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<T>
+  delete<T = any>(url: string, config?: AxiosRequestConfig): Promise<T>
+}
+
+export default instance as unknown as ApiClient

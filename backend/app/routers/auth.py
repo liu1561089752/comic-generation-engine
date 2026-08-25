@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
@@ -15,7 +15,10 @@ from app.core.security import (
     create_refresh_token,
     decode_token,
     revoke_token,
+    revoke_refresh_token,
+    is_refresh_token_revoked,
 )
+from app.infra.rate_limit import login_limiter
 from app.middleware.auth import get_current_user
 from app.schemas.common import ApiResponse
 
@@ -33,9 +36,22 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class LogoutRequest(BaseModel):
+    refresh_token: str = ""
+
+
 @router.post("/login")
-async def login(request: LoginRequest, db: AsyncSession = Depends(get_db)):
-    """用户登录（数据库验证）"""
+async def login(request: LoginRequest, raw_request: Request, db: AsyncSession = Depends(get_db)):
+    """用户登录（数据库验证，带登录限流）"""
+    # 登录限流：每 (IP + 用户名) 5 次 / 60 秒，防暴力破解
+    client_ip = raw_request.client.host if raw_request.client else "unknown"
+    limit_key = f"login:{client_ip}:{request.username}"
+    if not await login_limiter.allow(limit_key):
+        raise HTTPException(
+            status_code=429,
+            detail="登录尝试过于频繁，请稍后再试",
+        )
+
     result = await db.execute(
         select(User).where(User.username == request.username)
     )
@@ -75,6 +91,9 @@ async def refresh_token(request: RefreshRequest, db: AsyncSession = Depends(get_
     payload = decode_token(request.refresh_token)
     if payload is None or payload.get("type") != "refresh":
         raise HTTPException(status_code=401, detail="无效的刷新令牌")
+    # 检查 refresh token 是否已被撤销（登出后立即失效）
+    if is_refresh_token_revoked(request.refresh_token):
+        raise HTTPException(status_code=401, detail="刷新令牌已被撤销，请重新登录")
     try:
         user_uuid = UUID(str(payload.get("sub")))
     except (ValueError, TypeError):
@@ -120,8 +139,14 @@ async def get_me(user_id: str = Depends(get_current_user), db: AsyncSession = De
 
 
 @router.post("/logout")
-async def logout(token: str = Depends(oauth2_scheme), user_id: str = Depends(get_current_user)):
-    """登出（将当前令牌加入黑名单，立即失效）"""
+async def logout(
+    body: LogoutRequest = LogoutRequest(),
+    token: str = Depends(oauth2_scheme),
+    user_id: str = Depends(get_current_user),
+):
+    """登出（撤销 access token；若传入 refresh_token 则一并撤销，立即失效）"""
     revoke_token(token)
+    if body.refresh_token:
+        revoke_refresh_token(body.refresh_token)
     logger.info(f"用户 {user_id} 已登出，令牌已撤销")
     return ApiResponse(data={"message": "登出成功，令牌已失效"})

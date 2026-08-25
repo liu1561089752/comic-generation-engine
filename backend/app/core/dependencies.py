@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 # 归属校验依赖复用 app.core.database.get_db，保证与路由函数共享同一个 Session
 from app.core.database import async_session_factory, get_db as _shared_get_db
-from app.core.security import decode_token, _is_token_blacklisted
+from app.core.security import decode_token, is_token_blacklisted
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
@@ -37,7 +37,7 @@ async def get_current_user_obj(token: str = Depends(oauth2_scheme), db: AsyncSes
             headers={"WWW-Authenticate": "Bearer"},
         )
     # 检查 Token 是否已被撤销（登出）
-    if _is_token_blacklisted(token):
+    if is_token_blacklisted(token):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="令牌已被撤销，请重新登录",
@@ -69,7 +69,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> str:
             headers={"WWW-Authenticate": "Bearer"},
         )
     # 检查 Token 是否已被撤销（登出）
-    if _is_token_blacklisted(token):
+    if is_token_blacklisted(token):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="令牌已被撤销，请重新登录",

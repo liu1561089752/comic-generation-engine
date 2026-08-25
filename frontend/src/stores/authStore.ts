@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import apiClient from '../api/client'
 
 interface AuthUser {
   id: string
@@ -32,6 +33,11 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ token, refreshToken })
   },
   logout: () => {
+    // 尽力通知后端撤销 access + refresh 令牌（失败不影响本地登出）
+    const refreshToken = localStorage.getItem('refresh_token')
+    if (refreshToken) {
+      void apiClient.post('/auth/logout', { refresh_token: refreshToken }).catch(() => {})
+    }
     localStorage.removeItem('access_token')
     localStorage.removeItem('refresh_token')
     set({ user: null, token: null, refreshToken: null, isAuthenticated: false })

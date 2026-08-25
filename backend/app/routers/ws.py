@@ -6,12 +6,11 @@ from typing import Optional, Set
 from uuid import UUID
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import async_session_factory
 from app.repositories.task_repo import TaskRepository
-from app.models.task import Task
 from app.models.novel import Project
 from app.core.security import decode_token
 
@@ -126,95 +125,3 @@ async def task_status_websocket(
         logger.error(f"WebSocket 异常: {e}")
     finally:
         await task_event_manager.unsubscribe(task_id, websocket)
-
-
-@router.websocket("/tasks")
-async def task_list_websocket(
-    websocket: WebSocket,
-    token: str = Query(...),
-):
-    """
-    WebSocket 端点：订阅全部任务列表变更，需要 token 认证
-
-    连接后，每3秒推送一次队列看板数据:
-    {"type": "queue_update", "data": {...}}
-    """
-    payload = decode_token(token)
-    if payload is None or payload.get("type") != "access":
-        await websocket.close(code=4001)
-        return
-    user_id = payload.get("sub")
-    if not user_id:
-        await websocket.close(code=4001)
-        return
-    await websocket.accept()
-    logger.info("WebSocket 连接: /ws/tasks (全局)")
-
-    await task_event_manager.subscribe_global(websocket, user_id=user_id)
-    _started_at = time.monotonic()
-
-    try:
-        while True:
-            if await _enforce_max_lifetime(websocket, _started_at):
-                break
-            try:
-                # 每10秒推送队列数据（短 session，不持有 DB 连接）
-                # 实时更新由 task_event_manager 的事件广播处理，轮询仅作为补偿
-                async with async_session_factory() as db:
-                    # 仅当前用户项目的任务
-                    user_project_ids = select(Project.id).where(
-                        Project.user_id == user_id
-                    ).scalar_subquery()
-                    query = (
-                        select(Task)
-                        .where(
-                            Task.status.in_(
-                                ["queued", "running", "completed", "failed", "cancelled"]
-                            ),
-                            Task.project_id.in_(user_project_ids),
-                        )
-                        .order_by(Task.status, Task.created_at.desc())
-                        .limit(250)
-                    )
-                    result = await db.execute(query)
-                    all_tasks = list(result.scalars().all())
-
-                # 按 status 分组
-                kanban_data = {}
-                for status in ["queued", "running", "completed", "failed", "cancelled"]:
-                    status_tasks = [t for t in all_tasks if t.status == status][:50]
-                    kanban_data[status] = {
-                        "items": [_task_to_ws_message(t) for t in status_tasks],
-                        "total": len(status_tasks),
-                    }
-
-                try:
-                    await websocket.send_json({
-                        "type": "queue_update",
-                        "data": kanban_data,
-                    })
-                except Exception:
-                    break
-
-                # 等待10秒，同时监听消息（心跳）
-                try:
-                    data = await asyncio.wait_for(websocket.receive_text(), timeout=10)
-                    msg = json.loads(data)
-                    if msg.get("type") == "ping":
-                        await websocket.send_json({"type": "pong"})
-                    _started_at = time.monotonic()  # 有消息时重置空闲时间
-                except asyncio.TimeoutError:
-                    # 正常超时，继续下一轮推送
-                    continue
-                except (json.JSONDecodeError, ValueError):
-                    continue
-
-            except WebSocketDisconnect:
-                break
-            except Exception as e:
-                logger.error(f"任务列表 WebSocket 异常: {e}")
-                break
-
-    finally:
-        await task_event_manager.unsubscribe_global(websocket)
-        logger.info("WebSocket 断开: /ws/tasks (全局)")
