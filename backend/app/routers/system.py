@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, cast, Text as SAText
 from app.core.database import get_db
 from app.core.config import settings
+from app.core.crypto import encrypt_secret, decrypt_secret
 from app.middleware.auth import get_current_user
 from app.core.dependencies import require_admin
 from app.schemas.common import ApiResponse
@@ -15,6 +16,15 @@ import uuid
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _mask_key(key: str) -> str:
+    """API Key 打码：保留前 8 后 4 位，中间省略。"""
+    if not key:
+        return ""
+    if len(key) > 12:
+        return key[:8] + "..." + key[-4:]
+    return "***"
 
 # ---------- Model Configuration API (第16篇) ----------
 
@@ -56,14 +66,25 @@ class ImageGenConfigUpdate(BaseModel):
 
 
 async def _load_llm_config_from_db(db: AsyncSession) -> dict:
-    """从数据库加载 LLM 配置，未找到时回退到 settings"""
+    """从数据库加载 LLM 配置，未找到时回退到 settings。
+
+    api_key 落库为 AES-256-GCM 密文，读取时解密；
+    旧明文数据（解密失败）按原样使用并记录 warning，保证升级不中断。
+    """
     from app.models.system import LLMConfig
     result = await db.execute(select(LLMConfig).where(LLMConfig.is_active == True).limit(1))
     row = result.scalar_one_or_none()
     if row:
+        api_key = row.api_key or ""
+        if api_key:
+            decrypted = decrypt_secret(api_key)
+            if decrypted is None:
+                logger.warning("LLM api_key 解密失败，按旧明文处理，请重新保存一次配置")
+                decrypted = api_key
+            api_key = decrypted
         return {
             "api_base": row.api_base or "",
-            "api_key": row.api_key or "",
+            "api_key": api_key,
             "model_name": row.model_name or "",
             "is_active": row.is_active,
         }
@@ -82,10 +103,7 @@ async def get_llm_config(
 ):
     """获取 LLM 模型配置（从数据库读取，不修改内存缓存）"""
     db_config = await _load_llm_config_from_db(db)
-    masked_key = db_config["api_key"]
-    if len(masked_key) > 12:
-        masked_key = masked_key[:8] + "..." + masked_key[-4:]
-    return ApiResponse(data={**db_config, "api_key": masked_key})
+    return ApiResponse(data={**db_config, "api_key": _mask_key(db_config["api_key"])})
 
 
 @model_router.put("/llm")
@@ -94,28 +112,29 @@ async def update_llm_config(
     user_id: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """更新 LLM 模型配置（持久化到数据库）"""
+    """更新 LLM 模型配置（持久化到数据库，api_key 加密存储）"""
     from app.models.system import LLMConfig
     # 查找已有配置
     result = await db.execute(select(LLMConfig).where(LLMConfig.is_active == True).limit(1))
     row = result.scalar_one_or_none()
+    encrypted_key = encrypt_secret(config.api_key)
     if row:
         row.api_base = config.api_base
-        row.api_key = config.api_key
+        row.api_key = encrypted_key
         row.model_name = config.model_name
         row.is_active = config.is_active
         row.updated_at = datetime.now(timezone.utc)
     else:
         row = LLMConfig(
             api_base=config.api_base,
-            api_key=config.api_key,
+            api_key=encrypted_key,
             model_name=config.model_name,
             is_active=config.is_active,
         )
         db.add(row)
     await db.commit()
     await db.refresh(row)
-    # 更新内存缓存
+    # 更新内存缓存（内存中保留明文供运行时使用）
     _llm_config.update({
         "api_base": config.api_base,
         "api_key": config.api_key,
@@ -131,7 +150,8 @@ async def update_llm_config(
         "status": "success",
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
-    return ApiResponse(message="LLM 配置已更新", data=_llm_config)
+    # 响应不回显明文 api_key
+    return ApiResponse(message="LLM 配置已更新", data={**_llm_config, "api_key": _mask_key(config.api_key)})
 
 
 @model_router.post("/llm/test")
@@ -179,14 +199,25 @@ async def test_llm_connection(user_id: str = Depends(get_current_user)):
 
 
 async def _load_image_gen_config_from_db(db: AsyncSession) -> dict:
-    """从数据库加载生图配置，未找到时回退到 settings"""
+    """从数据库加载生图配置，未找到时回退到 settings。
+
+    api_key 落库为 AES-256-GCM 密文，读取时解密；
+    旧明文数据（解密失败）按原样使用并记录 warning，保证升级不中断。
+    """
     from app.models.system import ImageGenConfig
     result = await db.execute(select(ImageGenConfig).where(ImageGenConfig.is_active == True).limit(1))
     row = result.scalar_one_or_none()
     if row:
+        api_key = row.api_key or ""
+        if api_key:
+            decrypted = decrypt_secret(api_key)
+            if decrypted is None:
+                logger.warning("生图 api_key 解密失败，按旧明文处理，请重新保存一次配置")
+                decrypted = api_key
+            api_key = decrypted
         return {
             "api_base": row.api_base or "",
-            "api_key": row.api_key or "",
+            "api_key": api_key,
             "model_name": row.model_name or "",
             "is_active": row.is_active,
         }
@@ -205,10 +236,7 @@ async def get_image_gen_config(
 ):
     """获取生图模型配置（从数据库读取，不修改内存缓存）"""
     db_config = await _load_image_gen_config_from_db(db)
-    masked_key = db_config["api_key"]
-    if len(masked_key) > 12:
-        masked_key = masked_key[:8] + "..." + masked_key[-4:]
-    return ApiResponse(data={**db_config, "api_key": masked_key})
+    return ApiResponse(data={**db_config, "api_key": _mask_key(db_config["api_key"])})
 
 
 @model_router.put("/image-gen")
@@ -217,28 +245,29 @@ async def update_image_gen_config(
     user_id: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """更新生图模型配置（持久化到数据库）"""
+    """更新生图模型配置（持久化到数据库，api_key 加密存储）"""
     from app.models.system import ImageGenConfig
     # 查找已有配置
     result = await db.execute(select(ImageGenConfig).where(ImageGenConfig.is_active == True).limit(1))
     row = result.scalar_one_or_none()
+    encrypted_key = encrypt_secret(config.api_key)
     if row:
         row.api_base = config.api_base
-        row.api_key = config.api_key
+        row.api_key = encrypted_key
         row.model_name = config.model_name
         row.is_active = config.is_active
         row.updated_at = datetime.now(timezone.utc)
     else:
         row = ImageGenConfig(
             api_base=config.api_base,
-            api_key=config.api_key,
+            api_key=encrypted_key,
             model_name=config.model_name,
             is_active=config.is_active,
         )
         db.add(row)
     await db.commit()
     await db.refresh(row)
-    # 更新内存缓存
+    # 更新内存缓存（内存中保留明文供运行时使用）
     _image_gen_config.update({
         "api_base": config.api_base,
         "api_key": config.api_key,
@@ -254,17 +283,21 @@ async def update_image_gen_config(
         "status": "success",
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
-    return ApiResponse(message="生图模型配置已更新", data=_image_gen_config)
+    # 响应不回显明文 api_key
+    return ApiResponse(message="生图模型配置已更新", data={**_image_gen_config, "api_key": _mask_key(config.api_key)})
 
 
 @model_router.post("/image-gen/test")
 async def test_image_gen_connection(user_id: str = Depends(get_current_user)):
-    """测试生图模型连接"""
+    """测试生图模型连接（实际调用一次生图接口验证）"""
     import time
     start = time.time()
     try:
         if not _image_gen_config["api_key"]:
             raise HTTPException(status_code=400, detail="API Key 未配置")
+        from app.infra.adapters.image_gen_adapter import ImageGenAdapter
+        adapter = ImageGenAdapter(request_timeout=30)
+        result = await adapter.generate("a simple test image of a red circle on white background")
         duration_ms = int((time.time() - start) * 1000)
         _model_call_logs.append({
             "id": str(uuid.uuid4()),
