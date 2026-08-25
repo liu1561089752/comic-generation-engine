@@ -63,3 +63,5 @@ desktop.ini
 db_backup/
 debug_llm_response_*.txt
 backend/chapter1_user_prompt.json
+
+pytest-cache-files-*/
