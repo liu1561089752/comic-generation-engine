@@ -23,8 +23,12 @@ from litellm import exceptions as litellm_exc
 
 from app.infra.adapters.base_llm import BaseLLMAdapter, ChatMessage, ChatResult
 from app.core.config import settings
+from app.infra.adapters.litellm_http import ensure_litellm_http_client
 
 logger = logging.getLogger(__name__)
+
+# 统一 User-Agent（部分服务商 WAF 拦截 openai SDK 默认 UA，见 litellm_http 模块说明）
+ensure_litellm_http_client()
 
 # 全局并发限制：最多 5 个 LLM 请求同时进行
 _llm_semaphore = asyncio.Semaphore(5)
@@ -104,13 +108,16 @@ class LLMAdapter(BaseLLMAdapter):
         return m
 
     def _litellm_api_base(self) -> Optional[str]:
-        """api_base 归一化：仅对自定义 OpenAI 兼容端点（model 无前缀 → openai/）补齐 /v1。
+        """api_base 归一化：自定义 OpenAI 兼容端点（model 无前缀或 openai/ 前缀）补齐 /v1。
 
         旧实现（httpx 直连）会自动拼接 /v1/chat/completions；litellm 不会补 /v1，
-        因此这里保持兼容：端点未以 /v1 结尾时补上，避免现有无 /v1 配置（如本地中转）404。
-        已有 provider 前缀（deepseek/xxx 等）的模型路径由 litellm 原生处理，不干预。
+        因此这里保持兼容：端点未以 /v1 结尾时补上，避免无 /v1 配置（如 gemai.cc 中转站）
+        请求打到网关的非 API 路径（返回 HTML 或错误路由）。
+        其他 provider 前缀（deepseek/xxx 等）的模型路径由 litellm 原生处理，不干预。
         """
-        if self.model and "/" not in self.model and self.api_base:
+        m = self.model or ""
+        is_openai_compat = "/" not in m or m.startswith("openai/")
+        if is_openai_compat and self.api_base:
             base = self.api_base.rstrip("/")
             if not base.endswith("/v1"):
                 return base + "/v1"

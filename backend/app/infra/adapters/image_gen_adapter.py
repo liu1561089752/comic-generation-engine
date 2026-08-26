@@ -21,8 +21,12 @@ import litellm
 from app.core.config import settings
 from app.infra.adapters.base_image_gen import BaseImageGenerator
 from app.infra.model_logs import model_call_logs as _model_call_logs
+from app.infra.adapters.litellm_http import ensure_litellm_http_client
 
 logger = logging.getLogger(__name__)
+
+# 统一 User-Agent（部分服务商 WAF 拦截 openai SDK 默认 UA，见 litellm_http 模块说明）
+ensure_litellm_http_client()
 
 # adapter 内部信号量：全局图片生成并发上限
 _image_semaphore = asyncio.Semaphore(settings.IMAGE_MAX_CONCURRENT)
@@ -69,13 +73,15 @@ class ImageGenAdapter(BaseImageGenerator):
         return m
 
     def _litellm_api_base(self) -> str:
-        """api_base 归一化：仅对自定义 OpenAI 兼容端点（model 无前缀 → openai/）补齐 /v1。
+        """api_base 归一化：自定义 OpenAI 兼容端点（model 无前缀或 openai/ 前缀）补齐 /v1。
 
         旧实现（httpx 直连）会自动拼接 /v1/images/generations；litellm 不会补 /v1，
-        因此这里保持兼容：端点未以 /v1 结尾时补上，避免现有无 /v1 配置（如本地 Flow 中转）404。
-        已有 provider 前缀的模型路径由 litellm 原生处理，不干预。
+        因此这里保持兼容：端点未以 /v1 结尾时补上，避免无 /v1 配置（如本地 Flow 中转）404。
+        其他 provider 前缀的模型路径由 litellm 原生处理，不干预。
         """
-        if self.model and "/" not in self.model and self.api_base:
+        m = self.model or ""
+        is_openai_compat = "/" not in m or m.startswith("openai/")
+        if is_openai_compat and self.api_base:
             base = self.api_base.rstrip("/")
             if not base.endswith("/v1"):
                 return base + "/v1"
