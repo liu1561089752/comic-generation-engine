@@ -3,7 +3,6 @@
 Implements T3 D42: AI calls use short transaction pattern (read → close → AI → new session → write).
 Implements T9 problem 4: LayoutPage carries source_version + sync_status on prompt regeneration.
 """
-import asyncio
 import json
 import logging
 import re
@@ -71,6 +70,48 @@ class PromptService:
         parsed = parse_llm_json(result.content)
         shots = parsed.get("shots", [])
 
+        prompt_results = {}
+        for item in shots:
+            page_id = item.get("pageId", "")
+            image_prompt = item.get("imagePrompt", "")
+            if page_id and image_prompt:
+                prompt_results[page_id] = image_prompt
+        return prompt_results
+
+    async def _call_image_prompt_llm_stream(
+        self,
+        pages: list,
+        system_prompt: str,
+        tracker: Optional[TaskProgressTracker],
+        chapter_title: str,
+        chapter_idx: int,
+        total: int,
+    ) -> dict:
+        """章节生图提示词的流式 LLM 调用：增量文本实时推送到任务 stream_output。"""
+        llm = LLMAdapter(
+            api_key=settings.LLM_API_KEY,
+            api_base=settings.LLM_API_BASE,
+            model=settings.LLM_MODEL,
+        )
+
+        messages = [
+            ChatMessage(role="system", content=system_prompt),
+            ChatMessage(role="user", content=json.dumps(pages, ensure_ascii=False)),
+        ]
+        if tracker:
+            await tracker.push_stream(
+                f"\n\n════════ 第 {chapter_idx + 1}/{total} 章：{chapter_title} ════════\n"
+            )
+        parts: list[str] = []
+        async for delta in llm.chat_stream(messages=messages):
+            parts.append(delta)
+            if tracker:
+                await tracker.push_stream(delta)
+        if tracker:
+            await tracker.flush_stream()
+
+        parsed = parse_llm_json("".join(parts))
+        shots = parsed.get("shots", [])
         prompt_results = {}
         for item in shots:
             page_id = item.get("pageId", "")
@@ -199,43 +240,38 @@ class PromptService:
             prompt_results: Dict[str, str] = {}  # page_label -> image_prompt
             total_chapters = len(chapter_pages_list)
             completed_chapters = 0
-            tracker_lock = asyncio.Lock()
 
-            # Step 2: AI calls per chapter (no session held)
-            async def process_chapter(ch_data: dict) -> None:
-                nonlocal completed_chapters
+            # Step 2: AI calls per chapter — 逐章串行流式（原为 asyncio.gather 并行；
+            # 流式输出需要按章节顺序实时推送，串行保证 stream_output 可读）
+            for ch_idx, ch_data in enumerate(chapter_pages_list):
                 ch_id = ch_data["_ch_id"]
                 pages_in_ch = pages_by_chapter[ch_id]
                 pages_to_generate = [p for p in pages_in_ch if not p.get("has_prompt")]
+                completed_chapters += 1
                 if not pages_to_generate:
-                    async with tracker_lock:
-                        completed_chapters += 1
-                        if tracker:
-                            pct = int(completed_chapters / total_chapters * 90)
-                            await tracker.update_progress(pct, f"已生成 {completed_chapters}/{total_chapters} 章提示词")
-                    return
+                    if tracker and total_chapters > 0:
+                        pct = int(completed_chapters / total_chapters * 90)
+                        await tracker.update_progress(pct, f"已生成 {completed_chapters}/{total_chapters} 章提示词")
+                    continue
                 # 只发送需要生成的页面
                 target_labels = {p["page_label"] for p in pages_to_generate}
                 ch_payload = [pg for pg in ch_data["_pages"] if pg["pageId"] in target_labels]
                 chapter_labels = [p["page_label"] for p in pages_to_generate]
                 try:
-                    results = await self._call_image_prompt_llm(ch_payload, system_prompt)
+                    results = await self._call_image_prompt_llm_stream(
+                        ch_payload, system_prompt, tracker,
+                        lc_title_map.get(ch_id, ""), ch_idx, total_chapters,
+                    )
                     if results:
                         prompt_results.update(results)
                         logger.info(f"章节 {chapter_labels[0]}~{chapter_labels[-1]} 提示词生成成功")
                 except Exception as e:
                     logger.error(f"章节 {chapter_labels} 提示词生成失败: {e}")
-                finally:
-                    async with tracker_lock:
-                        completed_chapters += 1
-                        if tracker and total_chapters > 0:
-                            pct = int(completed_chapters / total_chapters * 90)
-                            await tracker.update_progress(
-                                pct, f"已生成 {completed_chapters}/{total_chapters} 章提示词"
-                            )
-
-            tasks = [process_chapter(cd) for cd in chapter_pages_list]
-            await asyncio.gather(*tasks, return_exceptions=True)
+                if tracker and total_chapters > 0:
+                    pct = int(completed_chapters / total_chapters * 90)
+                    await tracker.update_progress(
+                        pct, f"已生成 {completed_chapters}/{total_chapters} 章提示词"
+                    )
 
             # Step 3: Short write — batch save ImagePrompt records
             if prompt_results:
@@ -484,14 +520,15 @@ class PromptService:
                     cap = max(1, int(len(references[cat]) * ratio))
                     references[cat] = references[cat][:cap]
 
-            # Step 2: Parallel AI calls in batches (no session held)
+            # Step 2: AI calls in batches — 逐批串行流式（原为 asyncio.gather 并行；
+            # 流式输出需要实时推送，串行保证 stream_output 可读）
             ref_system_prompt = await get_prompt("reference_match")
             batch_size = 50
             total_pages = len(all_pages)
+            total_batches = (total_pages + batch_size - 1) // batch_size
             final_result = {}
-            batch_tasks = []
 
-            for batch_start in range(0, total_pages, batch_size):
+            for batch_idx, batch_start in enumerate(range(0, total_pages, batch_size)):
                 batch_pages = all_pages[batch_start:batch_start + batch_size]
                 logger.info(f"参考图匹配: 提交第 {batch_start+1}-{min(batch_start+batch_size, total_pages)} 页")
 
@@ -505,36 +542,37 @@ class PromptService:
                     "references": references,
                 }, ensure_ascii=False)
 
-                async def call_single_batch(msg: str, sp: str = ref_system_prompt) -> dict:
-                    llm = LLMAdapter(
-                        api_key=settings.LLM_API_KEY,
-                        api_base=settings.LLM_API_BASE,
-                        model=settings.LLM_MODEL,
+                llm = LLMAdapter(
+                    api_key=settings.LLM_API_KEY,
+                    api_base=settings.LLM_API_BASE,
+                    model=settings.LLM_MODEL,
+                )
+                messages_batch = [
+                    ChatMessage(role="system", content=ref_system_prompt),
+                    ChatMessage(role="user", content=user_message),
+                ]
+                if tracker:
+                    await tracker.push_stream(
+                        f"\n\n════════ 批次 {batch_idx + 1}/{total_batches} ════════\n"
                     )
-                    messages_batch = [
-                        ChatMessage(role="system", content=sp),
-                        ChatMessage(role="user", content=msg),
-                    ]
-                    result = await llm.chat(messages=messages_batch)
-                    parsed = parse_llm_json(result.content)
-                    if isinstance(parsed, dict):
-                        return parsed
-                    return {}
-
-                batch_tasks.append(call_single_batch(user_message))
-
-            if batch_tasks:
-                results = await asyncio.gather(*batch_tasks, return_exceptions=True)
-                for i, res in enumerate(results):
-                    if isinstance(res, Exception):
-                        logger.error(f"参考图匹配 LLM 调用失败 (batch {i+1}): {res}")
-                    elif isinstance(res, dict):
-                        final_result.update(res)
-
+                try:
+                    parts: list[str] = []
+                    async for delta in llm.chat_stream(messages=messages_batch):
+                        parts.append(delta)
+                        if tracker:
+                            await tracker.push_stream(delta)
                     if tracker:
-                        processed = min((i + 1) * batch_size, total_pages)
-                        progress_pct = int(processed / total_pages * 90)
-                        await tracker.update_progress(progress_pct, f"已匹配 {processed}/{total_pages} 页")
+                        await tracker.flush_stream()
+                    parsed = parse_llm_json("".join(parts))
+                    if isinstance(parsed, dict):
+                        final_result.update(parsed)
+                except Exception as e:
+                    logger.error(f"参考图匹配 LLM 调用失败 (batch {batch_idx + 1}): {e}")
+
+                if tracker:
+                    processed = min((batch_idx + 1) * batch_size, total_pages)
+                    progress_pct = int(processed / total_pages * 90)
+                    await tracker.update_progress(progress_pct, f"已匹配 {processed}/{total_pages} 页")
 
             # Step 3: Short write — update reference_ids
             valid_page_labels = {p["page_label"] for p in all_pages}

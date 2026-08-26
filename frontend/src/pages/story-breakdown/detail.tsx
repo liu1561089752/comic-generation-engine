@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Button,
@@ -24,6 +24,7 @@ import { novelApi } from '../../api/novelApi'
 import { useAutoSave, useBeforeUnload } from '../../hooks/useAutoSave'
 import { useTaskProgress } from '../../hooks/useTaskProgress'
 import { TaskProgressBar } from '../../components/common/TaskProgressBar'
+import StreamOutputPanel from '../../components/common/StreamOutputPanel'
 
 const { Title, Text } = Typography
 const { TextArea } = Input
@@ -237,8 +238,8 @@ export default function StoryBreakdownDetail({ projectId, novelId }: StoryBreakd
 
   const taskProgress = useTaskProgress({
     projectId,
-    // 生成脚本需要较快的流式刷新（默认 2s 会显得迟钝）
-    pollInterval: 600,
+    // 流式任务轮询间隔 1s（太快会加重轮询负载，太慢流式显示迟钝）
+    pollInterval: 1000,
     onCompleted: () => {
       if (projectId && novelId) {
         fetchScript(projectId, novelId)
@@ -250,14 +251,6 @@ export default function StoryBreakdownDetail({ projectId, novelId }: StoryBreakd
       updateGenerationTask('', 'failed')
     },
   })
-
-  // 流式输出面板：文本更新时自动滚动到底部
-  const streamBoxRef = useRef<HTMLDivElement | null>(null)
-  useEffect(() => {
-    if (streamBoxRef.current) {
-      streamBoxRef.current.scrollTop = streamBoxRef.current.scrollHeight
-    }
-  }, [taskProgress.streamText])
 
   return (
     <div style={{ height: 'calc(100vh - 104px)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -324,38 +317,11 @@ export default function StoryBreakdownDetail({ projectId, novelId }: StoryBreakd
       />
 
       {/* 流式输出：AI 生成脚本时实时展示生成内容（打字机效果） */}
-      {taskProgress.isRunning && taskProgress.streamText && (
-        <div
-          ref={streamBoxRef}
-          style={{
-            marginBottom: 16,
-            padding: '12px 16px',
-            background: '#f6f8fa',
-            borderRadius: 8,
-            border: '1px solid #d9d9d9',
-            maxHeight: 260,
-            overflow: 'auto',
-          }}
-        >
-          <div style={{ fontSize: 12, color: '#888', marginBottom: 6 }}>
-            AI 正在生成脚本（流式输出）...
-          </div>
-          <pre
-            style={{
-              margin: 0,
-              fontSize: 13,
-              lineHeight: 1.6,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-all',
-              fontFamily: 'inherit',
-              color: '#333',
-            }}
-          >
-            {taskProgress.streamText}
-            <span style={{ color: '#1677ff' }}>▍</span>
-          </pre>
-        </div>
-      )}
+      <StreamOutputPanel
+        visible={taskProgress.isRunning}
+        streamText={taskProgress.streamText}
+        title="AI 正在生成脚本（流式输出）..."
+      />
 
       {/* 主体区域 */}
       {scriptLoading && !hasScript ? (

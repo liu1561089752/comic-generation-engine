@@ -3,7 +3,6 @@
 Implements T3 D42: AI calls use short transaction pattern (read → close → AI → new session → write).
 Implements T9 problem 4: LayoutChapter/LayoutPage carry source_version + sync_status.
 """
-import asyncio
 import hashlib
 import json
 import logging
@@ -88,6 +87,68 @@ class LayoutService:
             self._dump_layout_llm_failure(chapter_data, result, e)
             raise
 
+    async def _call_layout_llm_stream(
+        self,
+        chapter_data: dict,
+        tracker: Optional[TaskProgressTracker],
+        chapter_title: str,
+        chapter_idx: int,
+        total: int,
+    ) -> List[dict]:
+        """章节排版的流式 LLM 调用：增量文本实时推送到任务 stream_output。
+
+        校验/失败 dump 逻辑与 _call_layout_llm 保持一致。
+        """
+        llm = LLMAdapter(
+            api_key=settings.LLM_API_KEY,
+            api_base=settings.LLM_API_BASE,
+            model=settings.LLM_MODEL or "gpt-4o",
+        )
+
+        system_prompt = await get_prompt("layout_generation")
+        messages = [
+            ChatMessage(role="system", content=system_prompt),
+            ChatMessage(role="user", content=json.dumps(chapter_data, ensure_ascii=False)),
+        ]
+        if tracker:
+            await tracker.push_stream(
+                f"\n\n════════ 第 {chapter_idx + 1}/{total} 章：{chapter_title} ════════\n"
+            )
+        parts: list[str] = []
+        result_content = ""
+        try:
+            async for delta in llm.chat_stream(messages=messages):
+                parts.append(delta)
+                if tracker:
+                    await tracker.push_stream(delta)
+            if tracker:
+                await tracker.flush_stream()
+            result_content = "".join(parts)
+            parsed = parse_llm_json(result_content)
+            if isinstance(parsed, dict) and "pages" in parsed:
+                pages = parsed["pages"]
+            elif isinstance(parsed, list):
+                pages = parsed
+            else:
+                pages = []
+            original_shots = {(s["shotId"], s["content"]) for s in chapter_data.get("shots", [])}
+            returned_shots = set()
+            for page in pages:
+                for s in page.get("shots", []):
+                    if not s["shotId"].endswith("_INSERT"):
+                        returned_shots.add((s["shotId"], s["content"]))
+            if original_shots and original_shots != returned_shots:
+                missing = original_shots - returned_shots
+                extra = returned_shots - original_shots
+                raise ValueError(
+                    f"排版生成 shot 不匹配: 缺失={missing}, 多余={extra}"
+                )
+            pages.sort(key=lambda x: int(x["pageId"].replace("P", "")))
+            return pages
+        except Exception as e:
+            self._dump_layout_llm_failure(chapter_data, result_content, e)
+            raise
+
     def _dump_layout_llm_failure(
         self, chapter_data: dict, result, error: Exception
     ) -> None:
@@ -120,7 +181,9 @@ class LayoutService:
                 "",
                 "=== LLM 原始返回内容 ===",
             ]
-            if result is not None and hasattr(result, "content"):
+            if isinstance(result, str):
+                lines.append(result)
+            elif result is not None and hasattr(result, "content"):
                 lines.append(result.content)
             else:
                 lines.append("(LLM 调用本身失败，没有返回内容)")
@@ -221,15 +284,20 @@ class LayoutService:
         skipped_count = len(chapters_input) - len(missing_chapters)
 
         try:
-            # Step 3: AI call — parallel, only for missing chapters
-            tasks = []
-            for ch in missing_chapters:
-                tasks.append(self._call_layout_llm({
-                    "chapterTitle": ch["chapterTitle"],
-                    "shots": ch["shots"],
-                }))
-            # T2: return_exceptions 防止单章失败导致全批中断
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # Step 3: AI call — 逐章串行流式（原为 asyncio.gather 并行；
+            # 流式输出需要按章节顺序实时推送，串行保证 stream_output 可读）
+            results = []
+            for idx, ch in enumerate(missing_chapters):
+                try:
+                    pages = await self._call_layout_llm_stream(
+                        {"chapterTitle": ch["chapterTitle"], "shots": ch["shots"]},
+                        tracker,
+                        ch["chapterTitle"], idx, len(missing_chapters),
+                    )
+                    results.append(pages)
+                except Exception as e:
+                    logger.error(f"章节 {ch['chapterTitle']} 排版生成失败: {e}")
+                    results.append(e)  # 与 gather(return_exceptions=True) 语义一致：异常条目跳过
 
             failed_layout_chapters = []
             valid_results = []
