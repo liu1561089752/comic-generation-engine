@@ -8,6 +8,8 @@ interface TaskProgressState {
   progress: number
   errorMessage: string | null
   logs: Array<{ timestamp: string; message: string; level: string }>
+  // 流式输出文本（生成脚本等任务的实时内容，增量拼接）
+  streamText: string
   polling: boolean
 }
 
@@ -25,9 +27,12 @@ export function useTaskProgress({ projectId, onCompleted, onFailed, pollInterval
     progress: 0,
     errorMessage: null,
     logs: [],
+    streamText: '',
     polling: false,
   })
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 已消费的 stream_output 长度（轮询只取增量，避免重复拼接）
+  const streamLenRef = useRef(0)
   // 轮询代次：startPolling / stopPolling / 卸载时递增，使旧循环在途请求的回调失效
   const generationRef = useRef(0)
   const onCompletedRef = useRef(onCompleted)
@@ -54,12 +59,14 @@ export function useTaskProgress({ projectId, onCompleted, onFailed, pollInterval
       timerRef.current = null
     }
     const generation = ++generationRef.current
+    streamLenRef.current = 0
     setState({
       taskId,
       status: 'queued',
       progress: 0,
       errorMessage: null,
       logs: [],
+      streamText: '',
       polling: true,
     })
     failCountRef.current = 0
@@ -74,12 +81,20 @@ export function useTaskProgress({ projectId, onCompleted, onFailed, pollInterval
         const data = res.data?.data || res.data
         // 成功时重置失败计数（D56）
         failCountRef.current = 0
+        // 流式输出增量：只取上次消费长度之后的新内容
+        let streamText = ''
+        const fullStream: string = data.stream_output || ''
+        if (fullStream.length > streamLenRef.current) {
+          streamText = fullStream.slice(streamLenRef.current)
+          streamLenRef.current = fullStream.length
+        }
         setState(prev => ({
           ...prev,
           status: data.status,
           progress: data.progress || 0,
           errorMessage: data.error_message || null,
           logs: data.logs || [],
+          streamText: streamText ? prev.streamText + streamText : prev.streamText,
         }))
 
         if (data.status === 'completed') {

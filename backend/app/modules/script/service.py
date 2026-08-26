@@ -88,11 +88,19 @@ class ScriptService:
         try:
             if tracker:
                 await tracker.update_progress(10, "AI 处理中...")
-            result = await llm.chat(messages=messages)
+            # 流式调用：增量文本实时推送到任务 stream_output（前端打字机展示），
+            # 同时拼接完整内容用于解析
+            full_parts: list[str] = []
+            async for delta in llm.chat_stream(messages=messages):
+                full_parts.append(delta)
+                if tracker:
+                    await tracker.push_stream(delta)
+            result_content = "".join(full_parts)
             if tracker:
+                await tracker.flush_stream()
                 await tracker.update_progress(50, "AI 处理完成，保存脚本数据...")
 
-            parsed = parse_llm_json(result.content)
+            parsed = parse_llm_json(result_content)
             # LLM 可能返回 {"chapters": [...]}，也可能直接返回 [...]；两种都要兼容
             if isinstance(parsed, dict):
                 chapters_data = parsed.get("chapters", [])
@@ -112,7 +120,7 @@ class ScriptService:
                     )
                 await write_session.flush()
 
-                content_hash = hashlib.md5(result.content.encode()).hexdigest()
+                content_hash = hashlib.md5(result_content.encode()).hexdigest()
                 for idx, ch_data in enumerate(chapters_data):
                     chapter = ScriptChapter(
                         novel_id=novel_id,

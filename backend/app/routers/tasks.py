@@ -37,6 +37,7 @@ def _task_to_dict(task: Task) -> dict:
         "input_data": task.input_data,
         "output_data": task.output_data,
         "logs": task.logs or [],
+        "stream_output": task.stream_output or "",
         "error_message": task.error_message,
         "started_at": task.started_at.isoformat() if task.started_at else None,
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,

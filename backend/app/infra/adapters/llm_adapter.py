@@ -223,6 +223,104 @@ class LLMAdapter(BaseLLMAdapter):
             usage=usage,
         )
 
+    async def chat_stream(
+        self,
+        messages: list[ChatMessage],
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+    ):
+        """流式调用 LLM（litellm stream=True），逐段产出文本增量。
+
+        用于生成脚本等需要实时展示输出内容的场景。完整内容由调用方拼接
+        （本方法内部也拼接用于写调用日志，内存开销与 chat() 一致）。
+        异常通过 ValueError 抛出（错误消息与 chat() 一致）。
+        """
+        if not self.api_key:
+            raise ValueError("AI 服务未配置 API Key，请在「模型配置」页面设置 API Key")
+        if not self.model:
+            raise ValueError("AI 服务未配置模型名称，请在「模型配置」页面选择或输入模型")
+
+        payload_messages = [
+            {"role": m.role, "content": m.content} for m in messages
+        ]
+
+        request_summary = {
+            "model": self.model,
+            "message_count": len(payload_messages),
+            "first_message_role": payload_messages[0]["role"] if payload_messages else None,
+            "temperature": temperature,
+            "api_base": self.api_base,
+            "timeout": self.timeout,
+            "max_retries": self.max_retries,
+            "stream": True,
+        }
+
+        start_ts = time.monotonic()
+        parts: list[str] = []
+        try:
+            # 信号量覆盖完整生命周期（含 liteLLM 内部重试）
+            async with _llm_semaphore:
+                logger.info(
+                    f"LLM request (litellm stream): model={self.model}, "
+                    f"messages={len(payload_messages)}, temp={temperature}, "
+                    f"api_base={self.api_base}"
+                )
+                resp = await litellm.acompletion(
+                    model=self._litellm_model(),
+                    messages=payload_messages,
+                    api_base=self._litellm_api_base() or None,
+                    api_key=self.api_key,
+                    temperature=temperature,
+                    max_tokens=max_tokens or settings.LLM_MAX_TOKENS,
+                    num_retries=self.max_retries,
+                    timeout=self.timeout,
+                    stream=True,
+                )
+                async for chunk in resp:
+                    if not chunk or not getattr(chunk, "choices", None):
+                        continue
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        parts.append(delta)
+                        yield delta
+        except Exception as e:
+            duration_ms = int((time.monotonic() - start_ts) * 1000)
+            self._append_log({
+                "id": str(uuid.uuid4()),
+                "model_type": "llm",
+                "model_name": self.model,
+                "call_type": "chat_stream",
+                "request": request_summary,
+                "duration_ms": duration_ms,
+                "status": "failed",
+                "error_message": str(e),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+            logger.error(f"LLM chat stream failed (model={self.model}): {e}")
+            raise ValueError(_map_litellm_error(e, self.timeout)) from e
+
+        full_content = "".join(parts)
+        duration_ms = int((time.monotonic() - start_ts) * 1000)
+        self._append_log({
+            "id": str(uuid.uuid4()),
+            "model_type": "llm",
+            "model_name": self.model,
+            "call_type": "chat_stream",
+            "request": request_summary,
+            "response_tokens": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
+            "duration_ms": duration_ms,
+            "status": "success",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        logger.info(
+            f"LLM stream response: model={self.model}, "
+            f"content_len={len(full_content)}, duration_ms={duration_ms}"
+        )
+
     def _append_log(self, entry: dict):
         """追加日志到全局队列，自动限制大小"""
         try:

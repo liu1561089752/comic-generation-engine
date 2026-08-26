@@ -36,6 +36,8 @@ async def get_task_status(
         "progress": task.progress,
         "error_message": task.error_message,
         "output_data": task.output_data,
+        # 流式输出（生成脚本等任务实时文本），前端增量读取
+        "stream_output": task.stream_output or "",
         "started_at": task.started_at.isoformat() if task.started_at else None,
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
     })

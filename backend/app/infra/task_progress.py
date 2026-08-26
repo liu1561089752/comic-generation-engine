@@ -6,6 +6,7 @@ H4 修复：tracker 不再持有 session 引用，每次 DB 操作用独立短 s
 """
 
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Optional, Any, Dict, List
 from uuid import UUID
@@ -33,10 +34,16 @@ class TaskProgressTracker:
         await tracker.complete(output_data)
     """
 
+    # 流式输出刷写间隔（秒）：token 太频繁，批量累积后写库
+    _STREAM_FLUSH_INTERVAL = 0.3
+
     def __init__(self, task: Task):
         self.task = task
         self._broadcast_enabled = True
         self._task_id = task.id
+        # 流式输出缓冲（push_stream 使用，节流批量写入 DB）
+        self._stream_buffer = ""
+        self._last_stream_flush = 0.0
 
     @classmethod
     async def create(
@@ -115,6 +122,51 @@ class TaskProgressTracker:
     async def add_log(self, message: str, level: str = "info"):
         await self._add_log(message, level)
         await self._broadcast()
+
+    # ─────────────────────────────────────────────
+    # 流式输出（生成脚本等任务的实时文本）
+    # ─────────────────────────────────────────────
+
+    async def push_stream(self, delta: str):
+        """追加一段流式输出文本（节流批量写 DB）。
+
+        - 缓冲累计，每 _STREAM_FLUSH_INTERVAL 秒刷写一次，避免每 token 一次 UPDATE
+        - 用 SQL 级 concat（stream_output = stream_output || :delta）只传输增量，
+          全量文本由 PostgreSQL 服务端拼接，DB 往返与网络开销可控
+        - 只写 DB 不广播（前端通过轮询接口增量读取），避免 WS 大 payload
+        """
+        if not delta:
+            return
+        self._stream_buffer += delta
+        now = time.monotonic()
+        if now - self._last_stream_flush < self._STREAM_FLUSH_INTERVAL:
+            return
+        await self._flush_stream()
+
+    async def flush_stream(self):
+        """强制刷写剩余缓冲（任务完成/失败前调用）。"""
+        await self._flush_stream()
+
+    async def _flush_stream(self):
+        if not self._stream_buffer:
+            return
+        buffer = self._stream_buffer
+        self._stream_buffer = ""
+        self._last_stream_flush = time.monotonic()
+        try:
+            async with async_session_factory() as sess:
+                stmt = (
+                    sa_update(Task)
+                    .where(Task.id == self._task_id)
+                    .values(stream_output=Task.stream_output + buffer)
+                )
+                await sess.execute(stmt)
+                await sess.commit()
+        except Exception as e:
+            logger.error(
+                f"Task {self._task_id} 流式输出写入失败: {e}",
+                exc_info=True,
+            )
 
     async def complete(self, output_data: Optional[Any] = None, message: str = "任务完成", broadcast: bool = True):
         self.task.status = "completed"

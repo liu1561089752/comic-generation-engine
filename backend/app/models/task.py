@@ -31,6 +31,8 @@ class Task(Base):
     input_data = Column(JSON, nullable=True)
     output_data = Column(JSON, nullable=True)
     logs = Column(JSON, nullable=True, default=list)
+    # 流式输出：生成脚本等任务的实时输出文本（轮询接口增量读取，SQL 级 concat 追加）
+    stream_output = Column(Text, nullable=False, default="", server_default="")
     error_message = Column(Text, nullable=True)
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
