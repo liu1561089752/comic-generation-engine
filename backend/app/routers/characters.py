@@ -12,6 +12,7 @@ from app.modules.character.service import CharacterService
 from app.infra.task_progress import TaskProgressTracker, find_running_task
 from app.infra.task_registry import spawn_background_task
 from app.infra.task_dispatcher import register_task_runner as _register
+from app.infra.task_concurrency import get_image_task_semaphore
 from app.schemas.common import ApiResponse
 from app.schemas.character_schema import (
     CharacterCreate,
@@ -67,33 +68,39 @@ async def _run_extract_characters(
 async def _run_generate_character_image(
     project_id: UUID, character_id: UUID, tracker: TaskProgressTracker
 ):
-    """生成角色形象后台任务。"""
-    try:
-        await tracker.set_running("开始生成角色形象...")
-        async with async_session_factory() as session:
-            service = CharacterService(session)
-            result = await service.generate_character_image(character_id, project_id)
-        name = result.get("character_name", "")
-        await tracker.complete(result, f"角色「{name}」形象已生成")
-    except Exception as e:
-        logger.exception(f"生成角色形象任务失败: {e}")
-        await tracker.fail(str(e))
+    """生成角色形象后台任务。
+
+    每类型最多 2 个并发（信号量），拿不到执行权时任务保持 queued 排队，
+    前面的任务完成后自动补位。
+    """
+    async with get_image_task_semaphore(TASK_GENERATE_CHARACTER_IMAGE):
+        try:
+            await tracker.set_running("开始生成角色形象...")
+            async with async_session_factory() as session:
+                service = CharacterService(session)
+                result = await service.generate_character_image(character_id, project_id)
+            name = result.get("character_name", "")
+            await tracker.complete(result, f"角色「{name}」形象已生成")
+        except Exception as e:
+            logger.exception(f"生成角色形象任务失败: {e}")
+            await tracker.fail(str(e))
 
 
 async def _run_generate_state_image(
     project_id: UUID, character_id: UUID, state_id: UUID, tracker: TaskProgressTracker
 ):
-    """生成角色状态形象后台任务。"""
-    try:
-        await tracker.set_running("开始生成状态形象...")
-        async with async_session_factory() as session:
-            service = CharacterService(session)
-            result = await service.generate_state_image(character_id, state_id, project_id)
-        name = result.get("state_name", "")
-        await tracker.complete(result, f"状态「{name}」形象已生成")
-    except Exception as e:
-        logger.exception(f"生成状态形象任务失败: {e}")
-        await tracker.fail(str(e))
+    """生成角色状态形象后台任务（每类型最多 2 个并发，其余排队）。"""
+    async with get_image_task_semaphore(TASK_GENERATE_STATE_IMAGE):
+        try:
+            await tracker.set_running("开始生成状态形象...")
+            async with async_session_factory() as session:
+                service = CharacterService(session)
+                result = await service.generate_state_image(character_id, state_id, project_id)
+            name = result.get("state_name", "")
+            await tracker.complete(result, f"状态「{name}」形象已生成")
+        except Exception as e:
+            logger.exception(f"生成状态形象任务失败: {e}")
+            await tracker.fail(str(e))
 
 
 # 注册任务执行器 — 供 retry 功能重新派发后台任务
@@ -480,10 +487,7 @@ async def generate_character_image(
     user_id: str = Depends(get_current_user),  # D48: 补全认证
     db: AsyncSession = Depends(get_db),
 ):
-    """生成角色形象（后台任务，纳入任务中心管理）"""
-    existing = await find_running_task(db, project_id, TASK_GENERATE_CHARACTER_IMAGE)
-    if existing:
-        return ApiResponse(data={"task_id": str(existing.id), "message": "已有正在执行的生成形象任务"})
+    """生成角色形象（后台任务，纳入任务中心管理；每类型最多 2 个并发，其余排队）"""
     tracker = await TaskProgressTracker.create(
         db, project_id, TASK_GENERATE_CHARACTER_IMAGE,
         "生成角色形象", {"character_id": str(character_id)}
@@ -503,10 +507,7 @@ async def generate_state_image(
     user_id: str = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """生成角色状态形象（以角色主图为参考，后台任务）"""
-    existing = await find_running_task(db, project_id, TASK_GENERATE_STATE_IMAGE)
-    if existing:
-        return ApiResponse(data={"task_id": str(existing.id), "message": "已有正在执行的生成状态形象任务"})
+    """生成角色状态形象（以角色主图为参考，后台任务；每类型最多 2 个并发，其余排队）"""
     tracker = await TaskProgressTracker.create(
         db, project_id, TASK_GENERATE_STATE_IMAGE,
         "生成状态形象", {"character_id": str(character_id), "state_id": str(state_id)}

@@ -11,6 +11,7 @@ from app.modules.world.service import WorldService
 from app.infra.task_progress import TaskProgressTracker, find_running_task
 from app.infra.task_registry import spawn_background_task
 from app.infra.task_dispatcher import register_task_runner as _register
+from app.infra.task_concurrency import get_image_task_semaphore
 from app.schemas.common import ApiResponse
 from app.schemas.world_schema import (
     WorldBuildingUpdate,
@@ -136,65 +137,69 @@ async def _run_ai_extract_outfits(
 async def _run_generate_scene_image(
     world_id: UUID, asset_id: UUID, project_id: UUID, tracker: TaskProgressTracker
 ):
-    """生成场景图片后台任务。"""
-    try:
-        await tracker.set_running("开始生成场景图片...")
-        async with async_session_factory() as session:
-            service = WorldService(session)
-            result = await service.generate_scene_image(asset_id, project_id)
-        name = result.get("asset_name", "")
-        await tracker.complete(result, f"场景「{name}」图片已生成")
-    except Exception as e:
-        logger.exception(f"生成场景图片任务失败: {e}")
-        await tracker.fail(str(e))
+    """生成场景图片后台任务（每类型最多 2 个并发，其余排队）。"""
+    async with get_image_task_semaphore(TASK_GENERATE_SCENE_IMAGE):
+        try:
+            await tracker.set_running("开始生成场景图片...")
+            async with async_session_factory() as session:
+                service = WorldService(session)
+                result = await service.generate_scene_image(asset_id, project_id)
+            name = result.get("asset_name", "")
+            await tracker.complete(result, f"场景「{name}」图片已生成")
+        except Exception as e:
+            logger.exception(f"生成场景图片任务失败: {e}")
+            await tracker.fail(str(e))
 
 
 async def _run_generate_prop_image(
     world_id: UUID, prop_id: UUID, project_id: UUID, tracker: TaskProgressTracker
 ):
-    """生成道具图片后台任务。"""
-    try:
-        await tracker.set_running("开始生成道具图片...")
-        async with async_session_factory() as session:
-            service = WorldService(session)
-            result = await service.generate_prop_image(prop_id, project_id)
-        name = result.get("prop_name", "")
-        await tracker.complete(result, f"道具「{name}」图片已生成")
-    except Exception as e:
-        logger.exception(f"生成道具图片任务失败: {e}")
-        await tracker.fail(str(e))
+    """生成道具图片后台任务（每类型最多 2 个并发，其余排队）。"""
+    async with get_image_task_semaphore(TASK_GENERATE_PROP_IMAGE):
+        try:
+            await tracker.set_running("开始生成道具图片...")
+            async with async_session_factory() as session:
+                service = WorldService(session)
+                result = await service.generate_prop_image(prop_id, project_id)
+            name = result.get("prop_name", "")
+            await tracker.complete(result, f"道具「{name}」图片已生成")
+        except Exception as e:
+            logger.exception(f"生成道具图片任务失败: {e}")
+            await tracker.fail(str(e))
 
 
 async def _run_generate_building_image(
     world_id: UUID, building_id: UUID, project_id: UUID, tracker: TaskProgressTracker
 ):
-    """生成建筑图片后台任务。"""
-    try:
-        await tracker.set_running("开始生成建筑图片...")
-        async with async_session_factory() as session:
-            service = WorldService(session)
-            result = await service.generate_building_image(building_id, project_id)
-        name = result.get("building_name", "")
-        await tracker.complete(result, f"建筑「{name}」图片已生成")
-    except Exception as e:
-        logger.exception(f"生成建筑图片任务失败: {e}")
-        await tracker.fail(str(e))
+    """生成建筑图片后台任务（每类型最多 2 个并发，其余排队）。"""
+    async with get_image_task_semaphore(TASK_GENERATE_BUILDING_IMAGE):
+        try:
+            await tracker.set_running("开始生成建筑图片...")
+            async with async_session_factory() as session:
+                service = WorldService(session)
+                result = await service.generate_building_image(building_id, project_id)
+            name = result.get("building_name", "")
+            await tracker.complete(result, f"建筑「{name}」图片已生成")
+        except Exception as e:
+            logger.exception(f"生成建筑图片任务失败: {e}")
+            await tracker.fail(str(e))
 
 
 async def _run_generate_outfit_image(
     world_id: UUID, outfit_id: UUID, project_id: UUID, tracker: TaskProgressTracker
 ):
-    """生成服装图片后台任务。"""
-    try:
-        await tracker.set_running("开始生成服装图片...")
-        async with async_session_factory() as session:
-            service = WorldService(session)
-            result = await service.generate_outfit_image(outfit_id, project_id)
-        name = result.get("outfit_name", "")
-        await tracker.complete(result, f"服装「{name}」图片已生成")
-    except Exception as e:
-        logger.exception(f"生成服装图片任务失败: {e}")
-        await tracker.fail(str(e))
+    """生成服装图片后台任务（每类型最多 2 个并发，其余排队）。"""
+    async with get_image_task_semaphore(TASK_GENERATE_OUTFIT_IMAGE):
+        try:
+            await tracker.set_running("开始生成服装图片...")
+            async with async_session_factory() as session:
+                service = WorldService(session)
+                result = await service.generate_outfit_image(outfit_id, project_id)
+            name = result.get("outfit_name", "")
+            await tracker.complete(result, f"服装「{name}」图片已生成")
+        except Exception as e:
+            logger.exception(f"生成服装图片任务失败: {e}")
+            await tracker.fail(str(e))
 
 
 # 注册任务执行器 — 供 retry 功能重新派发后台任务
@@ -499,10 +504,7 @@ async def generate_scene_image(
     user_id: str = Depends(get_current_user),  # D48: 补全认证
     db: AsyncSession = Depends(get_db),
 ):
-    """生成场景资产图片（后台任务，纳入任务中心管理）"""
-    existing = await find_running_task(db, project_id, TASK_GENERATE_SCENE_IMAGE)
-    if existing:
-        return ApiResponse(data={"task_id": str(existing.id), "message": "已有正在执行的生成场景图片任务"})
+    """生成场景资产图片（后台任务；每类型最多 2 个并发，其余排队）"""
     tracker = await TaskProgressTracker.create(
         db, project_id, TASK_GENERATE_SCENE_IMAGE,
         "生成场景图片", {"world_id": str(world_id), "asset_id": str(asset_id)}
@@ -619,10 +621,7 @@ async def generate_prop_image(
     user_id: str = Depends(get_current_user),  # D48: 补全认证
     db: AsyncSession = Depends(get_db),
 ):
-    """生成道具图片（后台任务，纳入任务中心管理）"""
-    existing = await find_running_task(db, project_id, TASK_GENERATE_PROP_IMAGE)
-    if existing:
-        return ApiResponse(data={"task_id": str(existing.id), "message": "已有正在执行的生成道具图片任务"})
+    """生成道具图片（后台任务；每类型最多 2 个并发，其余排队）"""
     tracker = await TaskProgressTracker.create(
         db, project_id, TASK_GENERATE_PROP_IMAGE,
         "生成道具图片", {"world_id": str(world_id), "prop_id": str(prop_id)}
@@ -739,10 +738,7 @@ async def generate_building_image(
     user_id: str = Depends(get_current_user),  # D48: 补全认证
     db: AsyncSession = Depends(get_db),
 ):
-    """生成建筑图片（后台任务，纳入任务中心管理）"""
-    existing = await find_running_task(db, project_id, TASK_GENERATE_BUILDING_IMAGE)
-    if existing:
-        return ApiResponse(data={"task_id": str(existing.id), "message": "已有正在执行的生成建筑图片任务"})
+    """生成建筑图片（后台任务；每类型最多 2 个并发，其余排队）"""
     tracker = await TaskProgressTracker.create(
         db, project_id, TASK_GENERATE_BUILDING_IMAGE,
         "生成建筑图片", {"world_id": str(world_id), "building_id": str(building_id)}
@@ -859,10 +855,7 @@ async def generate_outfit_image(
     user_id: str = Depends(get_current_user),  # D48: 补全认证
     db: AsyncSession = Depends(get_db),
 ):
-    """生成服装图片（后台任务，纳入任务中心管理）"""
-    existing = await find_running_task(db, project_id, TASK_GENERATE_OUTFIT_IMAGE)
-    if existing:
-        return ApiResponse(data={"task_id": str(existing.id), "message": "已有正在执行的生成服装图片任务"})
+    """生成服装图片（后台任务；每类型最多 2 个并发，其余排队）"""
     tracker = await TaskProgressTracker.create(
         db, project_id, TASK_GENERATE_OUTFIT_IMAGE,
         "生成服装图片", {"world_id": str(world_id), "outfit_id": str(outfit_id)}

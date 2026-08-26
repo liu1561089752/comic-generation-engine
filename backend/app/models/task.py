@@ -12,12 +12,18 @@ class Task(Base):
     __tablename__ = "tasks"
 
     __table_args__ = (
-        # 活跃任务去重：同一项目同一类型只允许一个 queued/running 任务
+        # 活跃任务去重：同一项目同一类型只允许一个 queued/running 任务。
+        # 单图生成任务（角色形象/状态形象/场景/道具/建筑/服装）除外——每张图是
+        # 独立任务，可同类型多任务排队（并发由 task_concurrency 信号量控制）。
         Index(
             "uq_tasks_active_dedup",
             "project_id",
             "task_type",
-            postgresql_where=text("status IN ('queued', 'running')"),
+            postgresql_where=text(
+                "status IN ('queued', 'running') "
+                "AND task_type NOT IN ('generate_character_image','generate_state_image',"
+                "'generate_scene_image','generate_prop_image','generate_building_image','generate_outfit_image')"
+            ),
             unique=True,
         ),
     )
