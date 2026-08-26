@@ -226,7 +226,7 @@ function StoryboardDetail({
       {/* 流式输出：AI 生成分镜时实时展示生成内容 */}
       <StreamOutputPanel
         visible={taskProgress.isRunning}
-        streamText={taskProgress.streamText}
+        sections={taskProgress.streamSections}
         title="AI 正在生成分镜（流式输出）..."
       />
 

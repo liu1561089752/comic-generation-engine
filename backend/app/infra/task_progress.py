@@ -5,6 +5,8 @@ H4 修复：tracker 不再持有 session 引用，每次 DB 操作用独立短 s
 消除 session 生命周期与 tracker 生命周期耦合导致的连接泄漏。
 """
 
+import asyncio
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -41,8 +43,10 @@ class TaskProgressTracker:
         self.task = task
         self._broadcast_enabled = True
         self._task_id = task.id
-        # 流式输出缓冲（push_stream 使用，节流批量写入 DB）
-        self._stream_buffer = ""
+        # 流式输出缓冲（push_stream 使用，节流批量写入 DB）。
+        # 多流并行：每个流用 stream_key 标识（章节/批次序号），事件以 JSONL 行写入。
+        self._stream_buffer: List[str] = []
+        self._stream_lock = asyncio.Lock()
         self._last_stream_flush = 0.0
 
     @classmethod
@@ -127,32 +131,59 @@ class TaskProgressTracker:
     # 流式输出（生成脚本等任务的实时文本）
     # ─────────────────────────────────────────────
 
-    async def push_stream(self, delta: str):
-        """追加一段流式输出文本（节流批量写 DB）。
+    async def push_stream(
+        self,
+        delta: str = "",
+        stream_key: Optional[int] = None,
+        stream_header: Optional[str] = None,
+    ):
+        """追加一段流式输出（节流批量写 DB，支持多流并行）。
 
+        - 多流并行：并行生成的多章/多批任务各用一个 stream_key（章节/批次序号），
+          事件以 JSONL 行写入（{"k": key, "t": 文本增量} / {"k": key, "h": 标题}），
+          前端按 key 分组渲染，互不干扰。单流任务（如生成脚本）不传 key（k=null）。
         - 缓冲累计，每 _STREAM_FLUSH_INTERVAL 秒刷写一次，避免每 token 一次 UPDATE
         - 用 SQL 级 concat（stream_output = stream_output || :delta）只传输增量，
           全量文本由 PostgreSQL 服务端拼接，DB 往返与网络开销可控
         - 只写 DB 不广播（前端通过轮询接口增量读取），避免 WS 大 payload
+
+        Args:
+            delta: 文本增量
+            stream_key: 流标识（并行任务传入章节/批次序号，None=单流）
+            stream_header: 流的标题事件（该流首次出现时写入，如"第 1/5 章：xxx"）
         """
-        if not delta:
+        if not delta and stream_header is None:
             return
-        self._stream_buffer += delta
-        now = time.monotonic()
-        if now - self._last_stream_flush < self._STREAM_FLUSH_INTERVAL:
-            return
-        await self._flush_stream()
+        async with self._stream_lock:
+            if stream_header is not None:
+                self._stream_buffer.append(
+                    json.dumps({"k": stream_key, "h": stream_header}, ensure_ascii=False)
+                )
+            if delta:
+                self._stream_buffer.append(
+                    json.dumps({"k": stream_key, "t": delta}, ensure_ascii=False)
+                )
+            now = time.monotonic()
+            if now - self._last_stream_flush < self._STREAM_FLUSH_INTERVAL:
+                return
+            lines = self._stream_buffer
+            self._stream_buffer = []
+            self._last_stream_flush = now
+        await self._write_stream_lines(lines)
 
     async def flush_stream(self):
         """强制刷写剩余缓冲（任务完成/失败前调用）。"""
-        await self._flush_stream()
+        async with self._stream_lock:
+            lines = self._stream_buffer
+            self._stream_buffer = []
+            if not lines:
+                return
+        await self._write_stream_lines(lines)
 
-    async def _flush_stream(self):
-        if not self._stream_buffer:
+    async def _write_stream_lines(self, lines: List[str]):
+        if not lines:
             return
-        buffer = self._stream_buffer
-        self._stream_buffer = ""
-        self._last_stream_flush = time.monotonic()
+        buffer = "".join(line + "\n" for line in lines)
         try:
             async with async_session_factory() as sess:
                 stmt = (

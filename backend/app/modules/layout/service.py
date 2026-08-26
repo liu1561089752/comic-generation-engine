@@ -3,6 +3,7 @@
 Implements T3 D42: AI calls use short transaction pattern (read → close → AI → new session → write).
 Implements T9 problem 4: LayoutChapter/LayoutPage carry source_version + sync_status.
 """
+import asyncio
 import hashlib
 import json
 import logging
@@ -97,6 +98,7 @@ class LayoutService:
     ) -> List[dict]:
         """章节排版的流式 LLM 调用：增量文本实时推送到任务 stream_output。
 
+        多章并行调用时各章用 chapter_idx 作为 stream_key，前端按 key 分组显示。
         校验/失败 dump 逻辑与 _call_layout_llm 保持一致。
         """
         llm = LLMAdapter(
@@ -112,7 +114,8 @@ class LayoutService:
         ]
         if tracker:
             await tracker.push_stream(
-                f"\n\n════════ 第 {chapter_idx + 1}/{total} 章：{chapter_title} ════════\n"
+                stream_key=chapter_idx,
+                stream_header=f"第 {chapter_idx + 1}/{total} 章：{chapter_title}",
             )
         parts: list[str] = []
         result_content = ""
@@ -120,7 +123,7 @@ class LayoutService:
             async for delta in llm.chat_stream(messages=messages):
                 parts.append(delta)
                 if tracker:
-                    await tracker.push_stream(delta)
+                    await tracker.push_stream(delta, stream_key=chapter_idx)
             if tracker:
                 await tracker.flush_stream()
             result_content = "".join(parts)
@@ -284,20 +287,16 @@ class LayoutService:
         skipped_count = len(chapters_input) - len(missing_chapters)
 
         try:
-            # Step 3: AI call — 逐章串行流式（原为 asyncio.gather 并行；
-            # 流式输出需要按章节顺序实时推送，串行保证 stream_output 可读）
-            results = []
+            # Step 3: AI call — 多章并行流式（各章 stream_key 区分，前端分组显示）
+            tasks = []
             for idx, ch in enumerate(missing_chapters):
-                try:
-                    pages = await self._call_layout_llm_stream(
-                        {"chapterTitle": ch["chapterTitle"], "shots": ch["shots"]},
-                        tracker,
-                        ch["chapterTitle"], idx, len(missing_chapters),
-                    )
-                    results.append(pages)
-                except Exception as e:
-                    logger.error(f"章节 {ch['chapterTitle']} 排版生成失败: {e}")
-                    results.append(e)  # 与 gather(return_exceptions=True) 语义一致：异常条目跳过
+                tasks.append(self._call_layout_llm_stream(
+                    {"chapterTitle": ch["chapterTitle"], "shots": ch["shots"]},
+                    tracker,
+                    ch["chapterTitle"], idx, len(missing_chapters),
+                ))
+            # T2: return_exceptions 防止单章失败导致全批中断
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
             failed_layout_chapters = []
             valid_results = []

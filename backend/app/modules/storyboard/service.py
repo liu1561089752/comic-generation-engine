@@ -3,6 +3,7 @@
 Implements T3 D42: AI calls use short transaction pattern.
 Implements T9 problem 4: StoryboardChapter/StoryboardShot carry source_version + sync_status.
 """
+import asyncio
 import hashlib
 import json
 import logging
@@ -72,7 +73,7 @@ class StoryboardService:
     ) -> List[dict]:
         """章节分镜的流式 LLM 调用：增量文本实时推送到任务 stream_output。
 
-        章节前后插入分隔标记，便于前端区分各章输出。
+        多章并行调用时各章用 chapter_idx 作为 stream_key，前端按 key 分组显示。
         """
         llm = LLMAdapter(
             api_key=settings.LLM_API_KEY,
@@ -90,13 +91,14 @@ class StoryboardService:
         ]
         if tracker:
             await tracker.push_stream(
-                f"\n\n════════ 第 {chapter_idx + 1}/{total} 章：{chapter_title} ════════\n"
+                stream_key=chapter_idx,
+                stream_header=f"第 {chapter_idx + 1}/{total} 章：{chapter_title}",
             )
         parts: list[str] = []
         async for delta in llm.chat_stream(messages=messages):
             parts.append(delta)
             if tracker:
-                await tracker.push_stream(delta)
+                await tracker.push_stream(delta, stream_key=chapter_idx)
         if tracker:
             await tracker.flush_stream()
 
@@ -176,20 +178,15 @@ class StoryboardService:
             await tracker.update_progress(10, f"已有 {skipped} 章分镜，将只生成剩余 {len(pending_input)} 章")
 
         try:
-            # Step 3: AI call — 逐章串行流式（原为 asyncio.gather 并行；
-            # 流式输出需要按章节顺序实时推送，串行保证 stream_output 可读）
-            results = []
+            # Step 3: AI call — 多章并行流式（各章 stream_key 区分，前端分组显示）
+            tasks = []
             for idx, ch in enumerate(pending_input):
                 llm_input = {"chapterTitle": ch["chapterTitle"], "shots": ch["shots"]}
-                try:
-                    shots = await self._call_storyboard_llm_stream(
-                        llm_input, novel_text, tracker,
-                        ch["chapterTitle"], idx, len(pending_input),
-                    )
-                    results.append(shots)
-                except Exception as e:
-                    logger.error(f"章节 {ch['chapterTitle']} 分镜生成失败: {e}")
-                    results.append(e)  # 与 gather(return_exceptions=True) 语义一致：异常条目跳过
+                tasks.append(self._call_storyboard_llm_stream(
+                    llm_input, novel_text, tracker,
+                    ch["chapterTitle"], idx, len(pending_input),
+                ))
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
             # Step 4: Short write — save results (M1: commit once after loop, H3: batch inserts)
             async with async_session_factory() as write_session:

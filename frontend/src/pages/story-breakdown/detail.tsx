@@ -319,7 +319,7 @@ export default function StoryBreakdownDetail({ projectId, novelId }: StoryBreakd
       {/* 流式输出：AI 生成脚本时实时展示生成内容（打字机效果） */}
       <StreamOutputPanel
         visible={taskProgress.isRunning}
-        streamText={taskProgress.streamText}
+        sections={taskProgress.streamSections}
         title="AI 正在生成脚本（流式输出）..."
       />
 

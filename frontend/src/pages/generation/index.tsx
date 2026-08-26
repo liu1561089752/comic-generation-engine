@@ -574,7 +574,7 @@ export default function GenerationCenter() {
       {/* 流式输出：一键生成提示词 / 一键匹配参考图时实时展示生成内容 */}
       <StreamOutputPanel
         visible={taskProgress.isRunning}
-        streamText={taskProgress.streamText}
+        sections={taskProgress.streamSections}
         title="AI 正在生成提示词/匹配参考图（流式输出）..."
       />
 

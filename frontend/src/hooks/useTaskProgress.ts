@@ -2,14 +2,21 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 
 type TaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
 
+/** 流式输出的一个分块（多流并行时按 key 分组：章节/批次） */
+export interface StreamSection {
+  key: number | null
+  title: string
+  text: string
+}
+
 interface TaskProgressState {
   taskId: string | null
   status: TaskStatus | null
   progress: number
   errorMessage: string | null
   logs: Array<{ timestamp: string; message: string; level: string }>
-  // 流式输出文本（生成脚本等任务的实时内容，增量拼接）
-  streamText: string
+  /** 流式输出分块（JSONL 多流解析结果，按 key 分组） */
+  streamSections: StreamSection[]
   polling: boolean
 }
 
@@ -27,12 +34,17 @@ export function useTaskProgress({ projectId, onCompleted, onFailed, pollInterval
     progress: 0,
     errorMessage: null,
     logs: [],
-    streamText: '',
+    streamSections: [],
     polling: false,
   })
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // 已消费的 stream_output 长度（轮询只取增量，避免重复拼接）
   const streamLenRef = useRef(0)
+  // 未完整行的缓冲（JSONL 行可能被轮询边界截断，留到下次补齐）
+  const pendingLineRef = useRef('')
+  // 分块映射与顺序（key 首次出现顺序）
+  const sectionsRef = useRef<Map<number | null, StreamSection>>(new Map())
+  const sectionsOrderRef = useRef<Array<number | null>>([])
   // 轮询代次：startPolling / stopPolling / 卸载时递增，使旧循环在途请求的回调失效
   const generationRef = useRef(0)
   const onCompletedRef = useRef(onCompleted)
@@ -60,13 +72,16 @@ export function useTaskProgress({ projectId, onCompleted, onFailed, pollInterval
     }
     const generation = ++generationRef.current
     streamLenRef.current = 0
+    pendingLineRef.current = ''
+    sectionsRef.current.clear()
+    sectionsOrderRef.current = []
     setState({
       taskId,
       status: 'queued',
       progress: 0,
       errorMessage: null,
       logs: [],
-      streamText: '',
+      streamSections: [],
       polling: true,
     })
     failCountRef.current = 0
@@ -81,20 +96,41 @@ export function useTaskProgress({ projectId, onCompleted, onFailed, pollInterval
         const data = res.data?.data || res.data
         // 成功时重置失败计数（D56）
         failCountRef.current = 0
-        // 流式输出增量：只取上次消费长度之后的新内容
-        let streamText = ''
+
+        // 流式输出增量：只取上次消费长度之后的新内容，按 JSONL 行解析（容错跳过非法行）
         const fullStream: string = data.stream_output || ''
         if (fullStream.length > streamLenRef.current) {
-          streamText = fullStream.slice(streamLenRef.current)
+          pendingLineRef.current += fullStream.slice(streamLenRef.current)
           streamLenRef.current = fullStream.length
+          const lines = pendingLineRef.current.split('\n')
+          pendingLineRef.current = lines.pop() ?? '' // 末行可能不完整，留到下次
+          for (const line of lines) {
+            const trimmed = line.trim()
+            if (!trimmed) continue
+            let ev: any
+            try {
+              ev = JSON.parse(trimmed)
+            } catch {
+              continue
+            }
+            const k: number | null = typeof ev.k === 'number' ? ev.k : null
+            if (!sectionsRef.current.has(k)) {
+              sectionsRef.current.set(k, { key: k, title: '', text: '' })
+              sectionsOrderRef.current.push(k)
+            }
+            const sec = sectionsRef.current.get(k)!
+            if (typeof ev.h === 'string' && ev.h) sec.title = ev.h
+            if (typeof ev.t === 'string' && ev.t) sec.text += ev.t
+          }
         }
+
         setState(prev => ({
           ...prev,
           status: data.status,
           progress: data.progress || 0,
           errorMessage: data.error_message || null,
           logs: data.logs || [],
-          streamText: streamText ? prev.streamText + streamText : prev.streamText,
+          streamSections: sectionsOrderRef.current.map(k => sectionsRef.current.get(k)!),
         }))
 
         if (data.status === 'completed') {

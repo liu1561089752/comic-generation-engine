@@ -225,7 +225,7 @@ function LayoutDetail({ projectId, novelId }: { projectId: string; novelId: stri
       {/* 流式输出：AI 排版时实时展示生成内容 */}
       <StreamOutputPanel
         visible={taskProgress.isRunning}
-        streamText={taskProgress.streamText}
+        sections={taskProgress.streamSections}
         title="AI 正在生成排版（流式输出）..."
       />
 
