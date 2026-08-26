@@ -21,7 +21,6 @@ import { novelApi } from '../../api/novelApi'
 import { useAutoSave, useBeforeUnload } from '../../hooks/useAutoSave'
 import { useTaskProgress } from '../../hooks/useTaskProgress'
 import { TaskProgressBar } from '../../components/common/TaskProgressBar'
-import StreamOutputPanel from '../../components/common/StreamOutputPanel'
 
 const { Title, Text } = Typography
 const { TextArea } = Input
@@ -47,8 +46,6 @@ function StoryboardDetail({
 
   const taskProgress = useTaskProgress({
     projectId,
-    // 流式任务轮询间隔 1s
-    pollInterval: 1000,
     onCompleted: () => {
       if (projectId && novelId) {
         fetchStoryboard(projectId, novelId)
@@ -221,13 +218,6 @@ function StoryboardDetail({
         progress={taskProgress.progress}
         errorMessage={taskProgress.errorMessage}
         logs={taskProgress.logs}
-      />
-
-      {/* 流式输出：AI 生成分镜时实时展示生成内容 */}
-      <StreamOutputPanel
-        visible={taskProgress.isRunning}
-        sections={taskProgress.streamSections}
-        title="AI 正在生成分镜（流式输出）..."
       />
 
       {storyboardLoading && !hasData ? (

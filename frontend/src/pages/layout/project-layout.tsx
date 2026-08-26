@@ -21,7 +21,6 @@ import { novelApi } from '../../api/novelApi'
 import { useAutoSave, useBeforeUnload } from '../../hooks/useAutoSave'
 import { useTaskProgress } from '../../hooks/useTaskProgress'
 import { TaskProgressBar } from '../../components/common/TaskProgressBar'
-import StreamOutputPanel from '../../components/common/StreamOutputPanel'
 
 const { Title, Text } = Typography
 
@@ -161,8 +160,6 @@ function LayoutDetail({ projectId, novelId }: { projectId: string; novelId: stri
 
   const taskProgress = useTaskProgress({
     projectId,
-    // 流式任务轮询间隔 1s
-    pollInterval: 1000,
     onCompleted: () => {
       if (projectId && novelId) {
         fetchLayout(projectId, novelId)
@@ -220,13 +217,6 @@ function LayoutDetail({ projectId, novelId }: { projectId: string; novelId: stri
         progress={taskProgress.progress}
         errorMessage={taskProgress.errorMessage}
         logs={taskProgress.logs}
-      />
-
-      {/* 流式输出：AI 排版时实时展示生成内容 */}
-      <StreamOutputPanel
-        visible={taskProgress.isRunning}
-        sections={taskProgress.streamSections}
-        title="AI 正在生成排版（流式输出）..."
       />
 
       {layoutLoading && !hasData ? (

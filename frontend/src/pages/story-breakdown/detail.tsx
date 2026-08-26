@@ -24,7 +24,6 @@ import { novelApi } from '../../api/novelApi'
 import { useAutoSave, useBeforeUnload } from '../../hooks/useAutoSave'
 import { useTaskProgress } from '../../hooks/useTaskProgress'
 import { TaskProgressBar } from '../../components/common/TaskProgressBar'
-import StreamOutputPanel from '../../components/common/StreamOutputPanel'
 
 const { Title, Text } = Typography
 const { TextArea } = Input
@@ -238,8 +237,6 @@ export default function StoryBreakdownDetail({ projectId, novelId }: StoryBreakd
 
   const taskProgress = useTaskProgress({
     projectId,
-    // 流式任务轮询间隔 1s（太快会加重轮询负载，太慢流式显示迟钝）
-    pollInterval: 1000,
     onCompleted: () => {
       if (projectId && novelId) {
         fetchScript(projectId, novelId)
@@ -314,13 +311,6 @@ export default function StoryBreakdownDetail({ projectId, novelId }: StoryBreakd
         progress={taskProgress.progress}
         errorMessage={taskProgress.errorMessage}
         logs={taskProgress.logs}
-      />
-
-      {/* 流式输出：AI 生成脚本时实时展示生成内容（打字机效果） */}
-      <StreamOutputPanel
-        visible={taskProgress.isRunning}
-        sections={taskProgress.streamSections}
-        title="AI 正在生成脚本（流式输出）..."
       />
 
       {/* 主体区域 */}

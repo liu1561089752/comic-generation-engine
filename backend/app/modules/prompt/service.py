@@ -67,56 +67,13 @@ class PromptService:
             ChatMessage(role="system", content=system_prompt),
             ChatMessage(role="user", content=json.dumps(pages, ensure_ascii=False)),
         ]
-        result = await llm.chat(messages=messages)
-        parsed = parse_llm_json(result.content)
-        shots = parsed.get("shots", [])
-
-        prompt_results = {}
-        for item in shots:
-            page_id = item.get("pageId", "")
-            image_prompt = item.get("imagePrompt", "")
-            if page_id and image_prompt:
-                prompt_results[page_id] = image_prompt
-        return prompt_results
-
-    async def _call_image_prompt_llm_stream(
-        self,
-        pages: list,
-        system_prompt: str,
-        tracker: Optional[TaskProgressTracker],
-        chapter_title: str,
-        chapter_idx: int,
-        total: int,
-    ) -> dict:
-        """章节生图提示词的流式 LLM 调用：增量文本实时推送到任务 stream_output。
-
-        多章并行调用时各章用 chapter_idx 作为 stream_key，前端按 key 分组显示。
-        """
-        llm = LLMAdapter(
-            api_key=settings.LLM_API_KEY,
-            api_base=settings.LLM_API_BASE,
-            model=settings.LLM_MODEL,
-        )
-
-        messages = [
-            ChatMessage(role="system", content=system_prompt),
-            ChatMessage(role="user", content=json.dumps(pages, ensure_ascii=False)),
-        ]
-        if tracker:
-            await tracker.push_stream(
-                stream_key=chapter_idx,
-                stream_header=f"第 {chapter_idx + 1}/{total} 章：{chapter_title}",
-            )
+        # 流式收集（规避网关 100s 超时）：LLM 流式返回，后端拼接完整内容再解析
         parts: list[str] = []
         async for delta in llm.chat_stream(messages=messages):
             parts.append(delta)
-            if tracker:
-                await tracker.push_stream(delta, stream_key=chapter_idx)
-        if tracker:
-            await tracker.flush_stream()
-
         parsed = parse_llm_json("".join(parts))
         shots = parsed.get("shots", [])
+
         prompt_results = {}
         for item in shots:
             page_id = item.get("pageId", "")
@@ -147,7 +104,6 @@ class PromptService:
 
                 # 构建 layout chapter 映射
                 lc_sort_map = {lc.id: lc.sort_order for lc in layout_chapters}
-                lc_title_map = {lc.id: lc.title for lc in layout_chapters}
 
                 # 查询 ScriptShot.content: (chapter_sort_order, shot_id) → content
                 content_map = {}
@@ -216,8 +172,8 @@ class PromptService:
                 pages_by_chapter[p["chapter_id"]].append(p)
 
             # 构建每章的页面列表，shots 嵌入完整 content + storyboardDetails
-            chapter_pages_list = []  # [{_ch_idx, _ch_id, _pages: [...]}]
-            for ch_idx, (ch_id, pages_in_ch) in enumerate(pages_by_chapter.items()):
+            chapter_pages_list = []  # [{_ch_id, _pages: [...]}]
+            for ch_id, pages_in_ch in pages_by_chapter.items():
                 sort_order = lc_sort_map.get(ch_id, 0)
                 pages_with_shots = []
                 for p in pages_in_ch:
@@ -236,9 +192,7 @@ class PromptService:
                         "visualFocus": p["visual_focus"],
                         "shots": page_shots,
                     })
-                    p["_chapter_idx"] = ch_idx
                 chapter_pages_list.append({
-                    "_ch_idx": ch_idx,
                     "_ch_id": ch_id,
                     "_pages": pages_with_shots,
                 })
@@ -248,11 +202,10 @@ class PromptService:
             completed_chapters = 0
             tracker_lock = asyncio.Lock()
 
-            # Step 2: AI calls per chapter — 多章并行流式（各章 stream_key 区分，前端分组显示）
+            # Step 2: AI calls per chapter — 多章并行（各章流式收集规避超时，结果按 sort_order 入库保证顺序）
             async def process_chapter(ch_data: dict) -> None:
                 nonlocal completed_chapters
                 ch_id = ch_data["_ch_id"]
-                ch_idx = ch_data["_ch_idx"]
                 pages_in_ch = pages_by_chapter[ch_id]
                 pages_to_generate = [p for p in pages_in_ch if not p.get("has_prompt")]
                 if not pages_to_generate:
@@ -267,10 +220,7 @@ class PromptService:
                 ch_payload = [pg for pg in ch_data["_pages"] if pg["pageId"] in target_labels]
                 chapter_labels = [p["page_label"] for p in pages_to_generate]
                 try:
-                    results = await self._call_image_prompt_llm_stream(
-                        ch_payload, system_prompt, tracker,
-                        lc_title_map.get(ch_id, ""), ch_idx, total_chapters,
-                    )
+                    results = await self._call_image_prompt_llm(ch_payload, system_prompt)
                     if results:
                         prompt_results.update(results)
                         logger.info(f"章节 {chapter_labels[0]}~{chapter_labels[-1]} 提示词生成成功")
@@ -535,14 +485,13 @@ class PromptService:
                     cap = max(1, int(len(references[cat]) * ratio))
                     references[cat] = references[cat][:cap]
 
-            # Step 2: AI calls in batches — 多批并行流式（各批 stream_key 区分，前端分组显示）
+            # Step 2: AI calls in batches — 多批并行（各批流式收集规避超时，结果按页聚合）
             ref_system_prompt = await get_prompt("reference_match")
             batch_size = 50
             total_pages = len(all_pages)
-            total_batches = (total_pages + batch_size - 1) // batch_size
             final_result = {}
 
-            async def call_single_batch(msg: str, batch_idx: int) -> dict:
+            async def call_single_batch(msg: str) -> dict:
                 llm = LLMAdapter(
                     api_key=settings.LLM_API_KEY,
                     api_base=settings.LLM_API_BASE,
@@ -552,25 +501,17 @@ class PromptService:
                     ChatMessage(role="system", content=ref_system_prompt),
                     ChatMessage(role="user", content=msg),
                 ]
-                if tracker:
-                    await tracker.push_stream(
-                        stream_key=batch_idx,
-                        stream_header=f"批次 {batch_idx + 1}/{total_batches}",
-                    )
+                # 流式收集（规避网关 100s 超时）：LLM 流式返回，后端拼接完整内容再解析
                 parts: list[str] = []
                 async for delta in llm.chat_stream(messages=messages_batch):
                     parts.append(delta)
-                    if tracker:
-                        await tracker.push_stream(delta, stream_key=batch_idx)
-                if tracker:
-                    await tracker.flush_stream()
                 parsed = parse_llm_json("".join(parts))
                 if isinstance(parsed, dict):
                     return parsed
                 return {}
 
             batch_tasks = []
-            for batch_idx, batch_start in enumerate(range(0, total_pages, batch_size)):
+            for batch_start in range(0, total_pages, batch_size):
                 batch_pages = all_pages[batch_start:batch_start + batch_size]
                 logger.info(f"参考图匹配: 提交第 {batch_start+1}-{min(batch_start+batch_size, total_pages)} 页")
 
@@ -584,7 +525,7 @@ class PromptService:
                     "references": references,
                 }, ensure_ascii=False)
 
-                batch_tasks.append(call_single_batch(user_message, batch_idx))
+                batch_tasks.append(call_single_batch(user_message))
 
             if batch_tasks:
                 results = await asyncio.gather(*batch_tasks, return_exceptions=True)

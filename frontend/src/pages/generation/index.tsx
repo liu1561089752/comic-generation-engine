@@ -36,7 +36,6 @@ import { worldApi, sceneAssetApi, propApi, buildingApi, outfitApi } from '../../
 import ProjectFilter from '../../components/common/ProjectFilter'
 import EmptyState from '../../components/common/EmptyState'
 import LazyImage from '../../components/common/LazyImage'
-import StreamOutputPanel from '../../components/common/StreamOutputPanel'
 import type { LayoutPage, Novel } from '../../types/novel'
 import type { Character, CharacterState } from '../../types/character'
 import type { SceneAsset, Prop, Building, Outfit } from '../../types/world'
@@ -421,8 +420,6 @@ export default function GenerationCenter() {
 
   const taskProgress = useTaskProgress({
     projectId,
-    // 流式任务轮询间隔 1s
-    pollInterval: 1000,
     onCompleted: () => {
       setSingleGenLoading(false)
       setPromptGenLoading(false)
@@ -570,13 +567,6 @@ export default function GenerationCenter() {
       {taskProgress.isFailed && taskProgress.errorMessage && (
         <Alert message={taskProgress.errorMessage} type="error" showIcon closable style={{ marginBottom: 8 }} />
       )}
-
-      {/* 流式输出：一键生成提示词 / 一键匹配参考图时实时展示生成内容 */}
-      <StreamOutputPanel
-        visible={taskProgress.isRunning}
-        sections={taskProgress.streamSections}
-        title="AI 正在生成提示词/匹配参考图（流式输出）..."
-      />
 
       {/* === Body === */}
       <div style={{ flex: 1, display: 'flex', gap: 10, overflow: 'hidden' }}>

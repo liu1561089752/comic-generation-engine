@@ -88,16 +88,13 @@ class ScriptService:
         try:
             if tracker:
                 await tracker.update_progress(10, "AI 处理中...")
-            # 流式调用：增量文本实时推送到任务 stream_output（前端打字机展示），
-            # 同时拼接完整内容用于解析
+            # 流式收集：LLM 用流式调用（规避网关 100s 超时），后端内部拼接完整内容
+            # 用于解析；不向前端实时推送，任务完成时一次性返回结果
             full_parts: list[str] = []
             async for delta in llm.chat_stream(messages=messages):
                 full_parts.append(delta)
-                if tracker:
-                    await tracker.push_stream(delta)
             result_content = "".join(full_parts)
             if tracker:
-                await tracker.flush_stream()
                 await tracker.update_progress(50, "AI 处理完成，保存脚本数据...")
 
             parsed = parse_llm_json(result_content)

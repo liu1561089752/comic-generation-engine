@@ -36,44 +36,10 @@ class StoryboardService:
         self.novel_repo = NovelRepository(session)
 
     async def _call_storyboard_llm(self, chapter_data: dict, novel_text: str = "") -> List[dict]:
-        llm = LLMAdapter(
-            api_key=settings.LLM_API_KEY,
-            api_base=settings.LLM_API_BASE,
-            model=settings.LLM_MODEL or "gpt-4o",
-        )
-        system_prompt = await get_prompt("storyboard_generation")
-        user_content = ""
-        if novel_text:
-            user_content = f"小说原始完整文本：\n{novel_text}\n\n"
-        user_content += json.dumps(chapter_data, ensure_ascii=False)
-        messages = [
-            ChatMessage(role="system", content=system_prompt),
-            ChatMessage(role="user", content=user_content),
-        ]
-        result = await llm.chat(messages=messages)
-        parsed = parse_llm_json(result.content)
-        shots = parsed.get("shots", [])
-        original_ids = {s["shotId"] for s in chapter_data["shots"]}
-        returned_ids = {s["shotId"] for s in shots}
-        if original_ids != returned_ids:
-            missing = original_ids - returned_ids
-            extra = returned_ids - original_ids
-            raise ValueError(f"分镜生成 shotId 不匹配: 缺失={missing}, 多余={extra}")
-        shots.sort(key=lambda x: int(x["shotId"]))
-        return shots
+        """调用 LLM 生成单章分镜（流式收集，规避网关超时）。
 
-    async def _call_storyboard_llm_stream(
-        self,
-        chapter_data: dict,
-        novel_text: str,
-        tracker: Optional[TaskProgressTracker],
-        chapter_title: str,
-        chapter_idx: int,
-        total: int,
-    ) -> List[dict]:
-        """章节分镜的流式 LLM 调用：增量文本实时推送到任务 stream_output。
-
-        多章并行调用时各章用 chapter_idx 作为 stream_key，前端按 key 分组显示。
+        LLM 用流式调用（stream=True）保持连接活跃，后端内部拼接完整内容再解析；
+        不向前端实时推送，多章并行结果由调用方按 sort_order 入库保证顺序。
         """
         llm = LLMAdapter(
             api_key=settings.LLM_API_KEY,
@@ -89,19 +55,9 @@ class StoryboardService:
             ChatMessage(role="system", content=system_prompt),
             ChatMessage(role="user", content=user_content),
         ]
-        if tracker:
-            await tracker.push_stream(
-                stream_key=chapter_idx,
-                stream_header=f"第 {chapter_idx + 1}/{total} 章：{chapter_title}",
-            )
         parts: list[str] = []
         async for delta in llm.chat_stream(messages=messages):
             parts.append(delta)
-            if tracker:
-                await tracker.push_stream(delta, stream_key=chapter_idx)
-        if tracker:
-            await tracker.flush_stream()
-
         parsed = parse_llm_json("".join(parts))
         shots = parsed.get("shots", [])
         original_ids = {s["shotId"] for s in chapter_data["shots"]}
@@ -178,14 +134,11 @@ class StoryboardService:
             await tracker.update_progress(10, f"已有 {skipped} 章分镜，将只生成剩余 {len(pending_input)} 章")
 
         try:
-            # Step 3: AI call — 多章并行流式（各章 stream_key 区分，前端分组显示）
+            # Step 3: AI call — 多章并行（各章流式收集规避超时，结果按 sort_order 入库保证顺序）
             tasks = []
-            for idx, ch in enumerate(pending_input):
+            for ch in pending_input:
                 llm_input = {"chapterTitle": ch["chapterTitle"], "shots": ch["shots"]}
-                tasks.append(self._call_storyboard_llm_stream(
-                    llm_input, novel_text, tracker,
-                    ch["chapterTitle"], idx, len(pending_input),
-                ))
+                tasks.append(self._call_storyboard_llm(llm_input, novel_text))
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             # Step 4: Short write — save results (M1: commit once after loop, H3: batch inserts)
